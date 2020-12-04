@@ -7,6 +7,8 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"strings"
+
 	"github.com/GoAdminGroup/go-admin/modules/config"
 	"github.com/GoAdminGroup/go-admin/modules/service"
 )
@@ -32,13 +34,13 @@ type Connection interface {
 
 	// QueryWithConnection is the query method with given connection of sql.
 	QueryWithConnection(conn, query string, args ...interface{}) ([]map[string]interface{}, error)
+	QueryWithTx(tx *sql.Tx, query string, args ...interface{}) ([]map[string]interface{}, error)
+	QueryWith(tx *sql.Tx, conn, query string, args ...interface{}) ([]map[string]interface{}, error)
 
 	// ExecWithConnection is the exec method with given connection of sql.
 	ExecWithConnection(conn, query string, args ...interface{}) (sql.Result, error)
-
-	QueryWithTx(tx *sql.Tx, query string, args ...interface{}) ([]map[string]interface{}, error)
-
 	ExecWithTx(tx *sql.Tx, query string, args ...interface{}) (sql.Result, error)
+	ExecWith(tx *sql.Tx, conn, query string, args ...interface{}) (sql.Result, error)
 
 	BeginTxWithReadUncommitted() *sql.Tx
 	BeginTxWithReadCommitted() *sql.Tx
@@ -60,10 +62,14 @@ type Connection interface {
 
 	Close() []error
 
-	// GetDelimiter get the default delimiter.
+	// GetDelimiter get the default testDelimiter.
 	GetDelimiter() string
 
 	GetDB(key string) *sql.DB
+
+	GetConfig(name string) config.Database
+
+	CreateDB(name string, beans ...interface{}) error
 }
 
 // GetConnectionByDriver return the Connection by given driver name.
@@ -90,7 +96,7 @@ func GetConnectionFromService(srv interface{}) Connection {
 }
 
 func GetConnection(srvs service.List) Connection {
-	if v, ok := srvs.Get(config.Get().Databases.GetDefault().Driver).(Connection); ok {
+	if v, ok := srvs.Get(config.GetDatabases().GetDefault().Driver).(Connection); ok {
 		return v
 	}
 	panic("wrong service")
@@ -104,7 +110,53 @@ func GetAggregationExpression(driver, field, headField, delimiter string) string
 		return fmt.Sprintf("group_concat(%s separator '%s') as %s", field, delimiter, headField)
 	case "sqlite":
 		return fmt.Sprintf("group_concat(%s, '%s') as %s", field, delimiter, headField)
+	case "mssql":
+		return fmt.Sprintf("string_agg(%s, '%s') as [%s]", field, delimiter, headField)
 	default:
 		panic("wrong driver")
 	}
+}
+
+const (
+	INSERT = 0
+	DELETE = 1
+	UPDATE = 2
+	QUERY  = 3
+)
+
+var ignoreErrors = [...][]string{
+	// insert
+	{
+		"LastInsertId is not supported",
+		"There is no generated identity value",
+	},
+	// delete
+	{
+		"no affect",
+	},
+	// update
+	{
+		"LastInsertId is not supported",
+		"There is no generated identity value",
+		"no affect",
+	},
+	// query
+	{
+		"LastInsertId is not supported",
+		"There is no generated identity value",
+		"no affect",
+		"out of index",
+	},
+}
+
+func CheckError(err error, t int) bool {
+	if err == nil {
+		return false
+	}
+	for _, msg := range ignoreErrors[t] {
+		if strings.Contains(err.Error(), msg) {
+			return false
+		}
+	}
+	return true
 }

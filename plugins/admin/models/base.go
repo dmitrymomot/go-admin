@@ -1,6 +1,8 @@
 package models
 
 import (
+	"database/sql"
+
 	"github.com/GoAdminGroup/go-admin/modules/db"
 )
 
@@ -9,6 +11,7 @@ type Base struct {
 	TableName string
 
 	Conn db.Connection
+	Tx   *sql.Tx
 }
 
 func (b Base) SetConn(con db.Connection) Base {

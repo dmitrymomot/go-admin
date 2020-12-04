@@ -1,6 +1,9 @@
 package datamodel
 
 import (
+	"html/template"
+
+	"github.com/GoAdminGroup/go-admin/context"
 	tmpl "github.com/GoAdminGroup/go-admin/template"
 	"github.com/GoAdminGroup/go-admin/template/chartjs"
 	"github.com/GoAdminGroup/go-admin/template/icon"
@@ -11,11 +14,10 @@ import (
 	"github.com/GoAdminGroup/themes/adminlte/components/productlist"
 	"github.com/GoAdminGroup/themes/adminlte/components/progress_group"
 	"github.com/GoAdminGroup/themes/adminlte/components/smallbox"
-	"html/template"
 )
 
 // GetContent return the content of index page.
-func GetContent() (types.Panel, error) {
+func GetContent(ctx *context.Context) (types.Panel, error) {
 
 	components := tmpl.Default()
 	colComp := components.Col()
@@ -63,42 +65,33 @@ func GetContent() (types.Panel, error) {
 	 * Box
 	/**************************/
 
-	table := components.Table().SetType("table").SetInfoList([]map[string]template.HTML{
+	table := components.Table().SetInfoList([]map[string]types.InfoItem{
 		{
-			"Order ID":   "OR9842",
-			"Item":       "Call of Duty IV",
-			"Status":     "shipped",
-			"Popularity": "90%",
+			"Order ID":   {Content: "OR9842"},
+			"Item":       {Content: "Call of Duty IV"},
+			"Status":     {Content: "shipped"},
+			"Popularity": {Content: "90%"},
 		}, {
-			"Order ID":   "OR9842",
-			"Item":       "Call of Duty IV",
-			"Status":     "shipped",
-			"Popularity": "90%",
+			"Order ID":   {Content: "OR9842"},
+			"Item":       {Content: "Call of Duty IV"},
+			"Status":     {Content: "shipped"},
+			"Popularity": {Content: "90%"},
 		}, {
-			"Order ID":   "OR9842",
-			"Item":       "Call of Duty IV",
-			"Status":     "shipped",
-			"Popularity": "90%",
+			"Order ID":   {Content: "OR9842"},
+			"Item":       {Content: "Call of Duty IV"},
+			"Status":     {Content: "shipped"},
+			"Popularity": {Content: "90%"},
 		}, {
-			"Order ID":   "OR9842",
-			"Item":       "Call of Duty IV",
-			"Status":     "shipped",
-			"Popularity": "90%",
+			"Order ID":   {Content: "OR9842"},
+			"Item":       {Content: "Call of Duty IV"},
+			"Status":     {Content: "shipped"},
+			"Popularity": {Content: "90%"},
 		},
-	}).SetThead([]map[string]string{
-		{
-			"head":     "Order ID",
-			"sortable": "0",
-		}, {
-			"head":     "Item",
-			"sortable": "0",
-		}, {
-			"head":     "Status",
-			"sortable": "0",
-		}, {
-			"head":     "Popularity",
-			"sortable": "0",
-		},
+	}).SetThead(types.Thead{
+		{Head: "Order ID"},
+		{Head: "Item"},
+		{Head: "Status"},
+		{Head: "Popularity"},
 	}).GetContent()
 
 	boxInfo := components.Box().

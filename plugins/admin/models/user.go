@@ -1,16 +1,19 @@
 package models
 
 import (
-	"github.com/GoAdminGroup/go-admin/modules/config"
-	"github.com/GoAdminGroup/go-admin/modules/db"
-	"github.com/GoAdminGroup/go-admin/modules/db/dialect"
-	"github.com/GoAdminGroup/go-admin/modules/logger"
-	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/constant"
+	"database/sql"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/GoAdminGroup/go-admin/modules/config"
+	"github.com/GoAdminGroup/go-admin/modules/db"
+	"github.com/GoAdminGroup/go-admin/modules/db/dialect"
+	"github.com/GoAdminGroup/go-admin/modules/logger"
+	"github.com/GoAdminGroup/go-admin/modules/utils"
+	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/constant"
 )
 
 // UserModel is user model structure.
@@ -31,21 +34,28 @@ type UserModel struct {
 
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
+
+	cacheReplacer *strings.Replacer
 }
 
 // User return a default user model.
 func User() UserModel {
-	return UserModel{Base: Base{TableName: config.Get().AuthUserTable}}
+	return UserModel{Base: Base{TableName: config.GetAuthUserTable()}}
 }
 
 // UserWithId return a default user model of given id.
 func UserWithId(id string) UserModel {
 	idInt, _ := strconv.Atoi(id)
-	return UserModel{Base: Base{TableName: config.Get().AuthUserTable}, Id: int64(idInt)}
+	return UserModel{Base: Base{TableName: config.GetAuthUserTable()}, Id: int64(idInt)}
 }
 
 func (t UserModel) SetConn(con db.Connection) UserModel {
 	t.Conn = con
+	return t
+}
+
+func (t UserModel) WithTx(tx *sql.Tx) UserModel {
+	t.Tx = tx
 	return t
 }
 
@@ -74,7 +84,7 @@ func (t UserModel) HasMenu() bool {
 // IsSuperAdmin check the user model is super admin or not.
 func (t UserModel) IsSuperAdmin() bool {
 	for _, per := range t.Permissions {
-		if len(per.HttpPath) > 0 && per.HttpPath[0] == "*" {
+		if len(per.HttpPath) > 0 && per.HttpPath[0] == "*" && per.HttpMethod[0] == "" {
 			return true
 		}
 	}
@@ -82,16 +92,33 @@ func (t UserModel) IsSuperAdmin() bool {
 }
 
 func (t UserModel) GetCheckPermissionByUrlMethod(path, method string) string {
-	if !t.CheckPermissionByUrlMethod(path, "GET", url.Values{}) {
+	if !t.CheckPermissionByUrlMethod(path, method, url.Values{}) {
 		return ""
 	}
 	return path
 }
 
-func (t UserModel) CheckPermissionByUrlMethod(path, method string, formParams url.Values) bool {
-	logoutCheck, _ := regexp.Compile(config.Get().Url("/logout") + "(.*?)")
+func (t UserModel) IsVisitor() bool {
+	return !t.CheckPermissionByUrlMethod(config.Url("/info/normal_manager"), "GET", url.Values{})
+}
 
-	if logoutCheck.MatchString(path) {
+func (t UserModel) HideUserCenterEntrance() bool {
+	return t.IsVisitor() && config.GetHideVisitorUserCenterEntrance()
+}
+
+func (t UserModel) Template(str string) string {
+	if t.cacheReplacer == nil {
+		t.cacheReplacer = strings.NewReplacer("{{.AuthId}}", strconv.Itoa(int(t.Id)),
+			"{{.AuthName}}", t.Name, "{{.AuthUserName}}", t.UserName)
+	}
+	return t.cacheReplacer.Replace(str)
+}
+
+func (t UserModel) CheckPermissionByUrlMethod(path, method string, formParams url.Values) bool {
+
+	// path, _ = url.PathUnescape(path)
+
+	if t.IsSuperAdmin() {
 		return true
 	}
 
@@ -99,12 +126,17 @@ func (t UserModel) CheckPermissionByUrlMethod(path, method string, formParams ur
 		return false
 	}
 
+	logoutCheck, _ := regexp.Compile(config.Url("/logout") + "(.*?)")
+
+	if logoutCheck.MatchString(path) {
+		return true
+	}
+
 	if path != "/" && path[len(path)-1] == '/' {
 		path = path[:len(path)-1]
 	}
 
-	path = strings.Replace(path, constant.EditPKKey, "id", -1)
-	path = strings.Replace(path, constant.DetailPKKey, "id", -1)
+	path = utils.ReplaceAll(path, constant.EditPKKey, "id", constant.DetailPKKey, "id")
 
 	path, params := getParam(path)
 	for key, value := range formParams {
@@ -123,11 +155,13 @@ func (t UserModel) CheckPermissionByUrlMethod(path, method string, formParams ur
 
 			for i := 0; i < len(v.HttpPath); i++ {
 
-				matchPath := config.Get().Url(strings.TrimSpace(v.HttpPath[i]))
+				matchPath := config.Url(t.Template(strings.TrimSpace(v.HttpPath[i])))
 				matchPath, matchParam := getParam(matchPath)
 
 				if matchPath == path {
-					return checkParam(params, matchParam)
+					if t.checkParam(params, matchParam) {
+						return true
+					}
 				}
 
 				reg, err := regexp.Compile(matchPath)
@@ -138,7 +172,9 @@ func (t UserModel) CheckPermissionByUrlMethod(path, method string, formParams ur
 				}
 
 				if reg.FindString(path) == path {
-					return checkParam(params, matchParam)
+					if t.checkParam(params, matchParam) {
+						return true
+					}
 				}
 			}
 		}
@@ -156,7 +192,7 @@ func getParam(u string) (string, url.Values) {
 	return urr[0], m
 }
 
-func checkParam(src, comp url.Values) bool {
+func (t UserModel) checkParam(src, comp url.Values) bool {
 	if len(comp) == 0 {
 		return true
 	}
@@ -175,7 +211,7 @@ func checkParam(src, comp url.Values) bool {
 			return false
 		}
 		for i := 0; i < len(v); i++ {
-			if v[i] == value[i] {
+			if v[i] == t.Template(value[i]) {
 				continue
 			} else {
 				return false
@@ -322,9 +358,9 @@ func (t UserModel) WithMenus() UserModel {
 }
 
 // New create a user model.
-func (t UserModel) New(username, password, name, avatar string) UserModel {
+func (t UserModel) New(username, password, name, avatar string) (UserModel, error) {
 
-	id, _ := t.Table(t.TableName).Insert(dialect.H{
+	id, err := t.WithTx(t.Tx).Table(t.TableName).Insert(dialect.H{
 		"username": username,
 		"password": password,
 		"name":     name,
@@ -337,37 +373,26 @@ func (t UserModel) New(username, password, name, avatar string) UserModel {
 	t.Avatar = avatar
 	t.Name = name
 
-	return t
+	return t, err
 }
 
 // Update update the user model.
-func (t UserModel) Update(username, password, name, avatar string) UserModel {
+func (t UserModel) Update(username, password, name, avatar string) (int64, error) {
 
 	fieldValues := dialect.H{
 		"username":   username,
 		"name":       name,
+		"avatar":     avatar,
 		"updated_at": time.Now().Format("2006-01-02 15:04:05"),
-	}
-
-	if avatar != "" {
-		fieldValues["avatar"] = avatar
-		t.Avatar = avatar
 	}
 
 	if password != "" {
 		fieldValues["password"] = password
-		t.Avatar = avatar
 	}
 
-	_, _ = t.Table(t.TableName).
+	return t.WithTx(t.Tx).Table(t.TableName).
 		Where("id", "=", t.Id).
 		Update(fieldValues)
-
-	t.UserName = username
-	t.Password = password
-	t.Name = name
-
-	return t
 }
 
 // UpdatePwd update the password of the user model.
@@ -393,23 +418,24 @@ func (t UserModel) CheckRoleId(roleId string) bool {
 }
 
 // DeleteRoles delete all the roles of the user model.
-func (t UserModel) DeleteRoles() {
-	_ = t.Table("goadmin_role_users").
+func (t UserModel) DeleteRoles() error {
+	return t.Table("goadmin_role_users").
 		Where("user_id", "=", t.Id).
 		Delete()
 }
 
 // AddRole add a role of the user model.
-func (t UserModel) AddRole(roleId string) {
+func (t UserModel) AddRole(roleId string) (int64, error) {
 	if roleId != "" {
 		if !t.CheckRoleId(roleId) {
-			_, _ = t.Table("goadmin_role_users").
+			return t.WithTx(t.Tx).Table("goadmin_role_users").
 				Insert(dialect.H{
 					"role_id": roleId,
 					"user_id": t.Id,
 				})
 		}
 	}
+	return 0, nil
 }
 
 // CheckRole check the role of the user.
@@ -444,23 +470,24 @@ func (t UserModel) CheckPermission(permission string) bool {
 }
 
 // DeletePermissions delete all the permissions of the user model.
-func (t UserModel) DeletePermissions() {
-	_ = t.Table("goadmin_user_permissions").
+func (t UserModel) DeletePermissions() error {
+	return t.WithTx(t.Tx).Table("goadmin_user_permissions").
 		Where("user_id", "=", t.Id).
 		Delete()
 }
 
 // AddPermission add a permission of the user model.
-func (t UserModel) AddPermission(permissionId string) {
+func (t UserModel) AddPermission(permissionId string) (int64, error) {
 	if permissionId != "" {
 		if !t.CheckPermissionById(permissionId) {
-			_, _ = t.Table("goadmin_user_permissions").
+			return t.WithTx(t.Tx).Table("goadmin_user_permissions").
 				Insert(dialect.H{
 					"permission_id": permissionId,
 					"user_id":       t.Id,
 				})
 		}
 	}
+	return 0, nil
 }
 
 // MapToModel get the user model from given map.

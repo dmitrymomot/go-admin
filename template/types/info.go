@@ -2,19 +2,25 @@ package types
 
 import (
 	"encoding/json"
+	"fmt"
+	"html"
+	"html/template"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/GoAdminGroup/go-admin/modules/config"
+
 	"github.com/GoAdminGroup/go-admin/context"
 	"github.com/GoAdminGroup/go-admin/modules/db"
+	"github.com/GoAdminGroup/go-admin/modules/errors"
+	"github.com/GoAdminGroup/go-admin/modules/language"
 	"github.com/GoAdminGroup/go-admin/modules/logger"
 	"github.com/GoAdminGroup/go-admin/modules/utils"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/modules"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/parameter"
 	"github.com/GoAdminGroup/go-admin/template/types/form"
 	"github.com/GoAdminGroup/go-admin/template/types/table"
-	"html"
-	"html/template"
-	"net/http"
-	"strconv"
-	"strings"
 )
 
 // FieldModel is the single query result.
@@ -27,19 +33,88 @@ type FieldModel struct {
 
 	// The current row data.
 	Row map[string]interface{}
+
+	// Post type
+	PostType PostType
+}
+
+type PostType uint8
+
+const (
+	PostTypeCreate = iota
+	PostTypeUpdate
+)
+
+func (m FieldModel) IsCreate() bool {
+	return m.PostType == PostTypeCreate
+}
+
+func (m FieldModel) IsUpdate() bool {
+	return m.PostType == PostTypeUpdate
 }
 
 // PostFieldModel contains ID and value of the single query result and the current row data.
 type PostFieldModel struct {
 	ID    string
 	Value FieldModelValue
-	Row   map[string]interface{}
+	Row   map[string]string
+	// Post type
+	PostType PostType
+}
+
+func (m PostFieldModel) IsCreate() bool {
+	return m.PostType == PostTypeCreate
+}
+
+func (m PostFieldModel) IsUpdate() bool {
+	return m.PostType == PostTypeUpdate
+}
+
+type InfoList []map[string]InfoItem
+
+type InfoItem struct {
+	Content template.HTML `json:"content"`
+	Value   string        `json:"value"`
+}
+
+func (i InfoList) GroupBy(groups TabGroups) []InfoList {
+
+	var res = make([]InfoList, len(groups))
+
+	for key, value := range groups {
+		var newInfoList = make(InfoList, len(i))
+
+		for index, info := range i {
+			var newRow = make(map[string]InfoItem)
+			for mk, m := range info {
+				if modules.InArray(value, mk) {
+					newRow[mk] = m
+				}
+			}
+			newInfoList[index] = newRow
+		}
+
+		res[key] = newInfoList
+	}
+
+	return res
 }
 
 type Callbacks []context.Node
 
 func (c Callbacks) AddCallback(node context.Node) Callbacks {
 	if node.Path != "" && node.Method != "" && len(node.Handlers) > 0 {
+		for _, item := range c {
+			if strings.EqualFold(item.Path, node.Path) &&
+				strings.EqualFold(item.Method, node.Method) {
+				return c
+			}
+		}
+		parr := strings.Split(node.Path, "?")
+		if len(parr) > 1 {
+			node.Path = parr[0]
+			return append(c, node)
+		}
 		return append(c, node)
 	}
 	return c
@@ -52,7 +127,10 @@ func (r FieldModelValue) Value() string {
 }
 
 func (r FieldModelValue) First() string {
-	return r[0]
+	if len(r) > 0 {
+		return r[0]
+	}
+	return ""
 }
 
 // FieldDisplay is filter function of data.
@@ -67,7 +145,7 @@ type Field struct {
 	Field    string
 	TypeName db.DatabaseType
 
-	Join Join
+	Joins Joins
 
 	Width      int
 	Sortable   bool
@@ -77,73 +155,132 @@ type Field struct {
 	Hide       bool
 
 	EditType    table.Type
-	EditOptions []map[string]string
+	EditOptions FieldOptions
 
-	FilterType      form.Type
-	FilterOptions   FieldOptions
-	FilterOperator  FilterOperator
-	FilterOptionExt template.JS
-	FilterHead      string
-	FilterHelpMsg   template.HTML
-	FilterProcess   func(string) string
+	FilterFormFields []FilterFormField
+
+	IsEditParam   bool
+	IsDeleteParam bool
+	IsDetailParam bool
 
 	FieldDisplay
 }
 
-func (f Field) FilterFormField(params parameter.Parameters, headField string) []FormField {
-	var value, value2 string
+type QueryFilterFn func(param parameter.Parameters, conn db.Connection) (ids []string, stopQuery bool)
+type UpdateParametersFn func(param *parameter.Parameters)
 
-	if f.FilterType.IsRange() {
-		value = params.GetFilterFieldValueStart(headField)
-		value2 = params.GetFilterFieldValueEnd(headField)
-	} else {
-		if f.FilterOperator == FilterOperatorFree {
-			value2 = GetOperatorFromValue(params.GetFieldOperator(headField)).String()
+type FilterFormField struct {
+	Type        form.Type
+	Options     FieldOptions
+	OptionTable OptionTable
+	Width       int
+	HeadWidth   int
+	InputWidth  int
+	Style       template.HTMLAttr
+	Operator    FilterOperator
+	OptionExt   template.JS
+	Head        string
+	Placeholder string
+	HelpMsg     template.HTML
+	NoIcon      bool
+	ProcessFn   func(string) string
+}
+
+func (f Field) GetFilterFormFields(params parameter.Parameters, headField string, sql ...*db.SQL) []FormField {
+
+	var (
+		filterForm               = make([]FormField, 0)
+		value, value2, keySuffix string
+	)
+
+	for index, filter := range f.FilterFormFields {
+
+		if index > 0 {
+			keySuffix = parameter.FilterParamCountInfix + strconv.Itoa(index)
 		}
-		value = params.GetFieldValue(headField)
-	}
 
-	var filterForm = make([]FormField, 0)
+		if filter.Type.IsRange() {
+			value = params.GetFilterFieldValueStart(headField)
+			value2 = params.GetFilterFieldValueEnd(headField)
+		} else if filter.Type.IsMultiSelect() {
+			value = params.GetFieldValuesStr(headField)
+		} else {
+			if filter.Operator == FilterOperatorFree {
+				value2 = GetOperatorFromValue(params.GetFieldOperator(headField, keySuffix)).String()
+			}
+			value = params.GetFieldValue(headField + keySuffix)
+		}
 
-	filterForm = append(filterForm, FormField{
-		Field:     headField,
-		Head:      modules.AorB(f.FilterHead == "", f.Head, f.FilterHead),
-		TypeName:  f.TypeName,
-		HelpMsg:   f.FilterHelpMsg,
-		FormType:  f.FilterType,
-		Editable:  true,
-		Value:     template.HTML(value),
-		Value2:    value2,
-		Options:   f.FilterOptions.SetSelected(params.GetFieldValue(f.Field), f.FilterType.SelectedLabel()),
-		OptionExt: f.FilterOptionExt,
-		Label:     f.FilterOperator.Label(),
-	})
+		var (
+			optionExt1 = filter.OptionExt
+			optionExt2 template.JS
+		)
 
-	if f.FilterOperator.AddOrNot() {
-		filterForm = append(filterForm, FormField{
-			Field:    headField + parameter.FilterParamOperatorSuffix,
-			Head:     f.Head,
-			TypeName: f.TypeName,
-			Value:    template.HTML(f.FilterOperator.Value()),
-			FormType: f.FilterType,
-			Hide:     true,
-		})
+		if filter.OptionExt == template.JS("") {
+			op1, op2, js := filter.Type.GetDefaultOptions(headField + keySuffix)
+			if op1 != nil {
+				s, _ := json.Marshal(op1)
+				optionExt1 = template.JS(string(s))
+			}
+			if op2 != nil {
+				s, _ := json.Marshal(op2)
+				optionExt2 = template.JS(string(s))
+			}
+			if js != template.JS("") {
+				optionExt1 = js
+			}
+		}
+
+		field := &FormField{
+			Field:       headField + keySuffix,
+			FieldClass:  headField + keySuffix,
+			Head:        filter.Head,
+			TypeName:    f.TypeName,
+			HelpMsg:     filter.HelpMsg,
+			NoIcon:      filter.NoIcon,
+			FormType:    filter.Type,
+			Editable:    true,
+			Width:       filter.Width,
+			HeadWidth:   filter.HeadWidth,
+			InputWidth:  filter.InputWidth,
+			Style:       filter.Style,
+			Placeholder: filter.Placeholder,
+			Value:       template.HTML(value),
+			Value2:      value2,
+			Options:     filter.Options,
+			OptionExt:   optionExt1,
+			OptionExt2:  optionExt2,
+			OptionTable: filter.OptionTable,
+			Label:       filter.Operator.Label(),
+		}
+
+		field.setOptionsFromSQL(sql[0])
+
+		if filter.Type.IsSingleSelect() {
+			field.Options = field.Options.SetSelected(params.GetFieldValue(f.Field), filter.Type.SelectedLabel())
+		}
+
+		if filter.Type.IsMultiSelect() {
+			field.Options = field.Options.SetSelected(params.GetFieldValues(f.Field), filter.Type.SelectedLabel())
+		}
+
+		filterForm = append(filterForm, *field)
+
+		if filter.Operator.AddOrNot() {
+			ff := headField + parameter.FilterParamOperatorSuffix + keySuffix
+			filterForm = append(filterForm, FormField{
+				Field:      ff,
+				FieldClass: ff,
+				Head:       f.Head,
+				TypeName:   f.TypeName,
+				Value:      template.HTML(filter.Operator.Value()),
+				FormType:   filter.Type,
+				Hide:       true,
+			})
+		}
 	}
 
 	return filterForm
-}
-
-func (f Field) GetEditOptions() string {
-	if len(f.EditOptions) == 0 {
-		return ""
-	}
-	eo, err := json.Marshal(f.EditOptions)
-
-	if err != nil {
-		return ""
-	}
-
-	return string(eo)
 }
 
 func (f Field) Exist() bool {
@@ -159,106 +296,126 @@ type TableInfo struct {
 	Driver     string
 }
 
-func (f FieldList) GetTheadAndFilterForm(info TableInfo, params parameter.Parameters, columns []string) ([]map[string]string,
-	string, string, []string, []FormField) {
+func (f FieldList) GetTheadAndFilterForm(info TableInfo, params parameter.Parameters, columns []string,
+	sql ...func() *db.SQL) (Thead, string, string, string, []string, []FormField) {
 	var (
-		thead      = make([]map[string]string, 0)
+		thead      = make(Thead, 0)
 		fields     = ""
+		joinFields = ""
 		joins      = ""
 		joinTables = make([]string, 0)
 		filterForm = make([]FormField, 0)
+		tableName  = info.Delimiter + info.Table + info.Delimiter
 	)
 	for _, field := range f {
 		if field.Field != info.PrimaryKey && modules.InArray(columns, field.Field) &&
-			!field.Join.Valid() {
-			fields += info.Table + "." + modules.FilterField(field.Field, info.Delimiter) + ","
+			!field.Joins.Valid() {
+			fields += tableName + "." + modules.FilterField(field.Field, info.Delimiter) + ","
 		}
 
 		headField := field.Field
 
-		if field.Join.Valid() {
-			headField = field.Join.Table + "_goadmin_join_" + field.Field
-			fields += db.GetAggregationExpression(info.Driver, field.Join.Table+"."+
+		if field.Joins.Valid() {
+			headField = field.Joins.Last().GetTableName() + parameter.FilterParamJoinInfix + field.Field
+			joinFields += db.GetAggregationExpression(info.Driver, field.Joins.Last().GetTableName(info.Delimiter)+"."+
 				modules.FilterField(field.Field, info.Delimiter), headField, JoinFieldValueDelimiter) + ","
-			if !modules.InArray(joinTables, field.Join.Table) {
-				joinTables = append(joinTables, field.Join.Table)
-				joins += " left join " + modules.FilterField(field.Join.Table, info.Delimiter) + " on " +
-					field.Join.Table + "." + modules.FilterField(field.Join.JoinField, info.Delimiter) + " = " +
-					info.Table + "." + modules.FilterField(field.Join.Field, info.Delimiter)
+			for _, join := range field.Joins {
+				if !modules.InArray(joinTables, join.GetTableName(info.Delimiter)) {
+					joinTables = append(joinTables, join.GetTableName(info.Delimiter))
+					if join.BaseTable == "" {
+						join.BaseTable = info.Table
+					}
+					joins += " left join " + modules.FilterField(join.Table, info.Delimiter) + " " + join.TableAlias + " on " +
+						join.GetTableName(info.Delimiter) + "." + modules.FilterField(join.JoinField, info.Delimiter) + " = " +
+						modules.Delimiter(info.Delimiter, join.BaseTable) + "." + modules.FilterField(join.Field, info.Delimiter)
+				}
 			}
 		}
 
 		if field.Filterable {
-			filterForm = append(filterForm, field.FilterFormField(params, headField)...)
-		}
-
-		if field.Hide {
-			continue
-		}
-		thead = append(thead, map[string]string{
-			"head":       field.Head,
-			"sortable":   modules.AorB(field.Sortable, "1", "0"),
-			"field":      headField,
-			"hide":       modules.AorB(modules.InArrayWithoutEmpty(params.Columns, headField), "0", "1"),
-			"editable":   modules.AorB(field.EditAble, "true", "false"),
-			"edittype":   field.EditType.String(),
-			"editoption": field.GetEditOptions(),
-			"width":      strconv.Itoa(field.Width),
-		})
-	}
-
-	return thead, fields, joins, joinTables, filterForm
-}
-
-func (f FieldList) GetThead(info TableInfo, params parameter.Parameters, columns []string) ([]map[string]string, string, string) {
-	var (
-		thead      = make([]map[string]string, 0)
-		fields     = ""
-		joins      = ""
-		joinTables = make([]string, 0)
-	)
-	for _, field := range f {
-		if field.Field != info.PrimaryKey && modules.InArray(columns, field.Field) &&
-			!field.Join.Valid() {
-			fields += info.Table + "." + modules.FilterField(field.Field, info.Delimiter) + ","
-		}
-
-		headField := field.Field
-
-		if field.Join.Valid() {
-			headField = field.Join.Table + "_goadmin_join_" + field.Field
-			fields += db.GetAggregationExpression(info.Driver, field.Join.Table+"."+
-				modules.FilterField(field.Field, info.Delimiter), headField, JoinFieldValueDelimiter) + ","
-			if !modules.InArray(joinTables, field.Join.Table) {
-				joinTables = append(joinTables, field.Join.Table)
-				joins += " left join " + modules.FilterField(field.Join.Table, info.Delimiter) + " on " +
-					field.Join.Table + "." + modules.FilterField(field.Join.JoinField, info.Delimiter) + " = " +
-					info.Table + "." + modules.FilterField(field.Join.Field, info.Delimiter)
+			if len(sql) > 0 {
+				filterForm = append(filterForm, field.GetFilterFormFields(params, headField, sql[0]())...)
+			} else {
+				filterForm = append(filterForm, field.GetFilterFormFields(params, headField)...)
 			}
 		}
 
 		if field.Hide {
 			continue
 		}
-		thead = append(thead, map[string]string{
-			"head":       field.Head,
-			"sortable":   modules.AorB(field.Sortable, "1", "0"),
-			"field":      headField,
-			"hide":       modules.AorB(modules.InArrayWithoutEmpty(params.Columns, headField), "0", "1"),
-			"editable":   modules.AorB(field.EditAble, "true", "false"),
-			"edittype":   field.EditType.String(),
-			"editoption": field.GetEditOptions(),
-			"width":      strconv.Itoa(field.Width),
+		thead = append(thead, TheadItem{
+			Head:       field.Head,
+			Sortable:   field.Sortable,
+			Field:      headField,
+			Hide:       !modules.InArrayWithoutEmpty(params.Columns, headField),
+			Editable:   field.EditAble,
+			EditType:   field.EditType.String(),
+			EditOption: field.EditOptions,
+			Width:      strconv.Itoa(field.Width) + "px",
+		})
+	}
+
+	return thead, fields, joinFields, joins, joinTables, filterForm
+}
+
+func (f FieldList) GetThead(info TableInfo, params parameter.Parameters, columns []string) (Thead, string, string) {
+	var (
+		thead      = make(Thead, 0)
+		fields     = ""
+		joins      = ""
+		joinTables = make([]string, 0)
+	)
+	for _, field := range f {
+		if field.Field != info.PrimaryKey && modules.InArray(columns, field.Field) &&
+			!field.Joins.Valid() {
+			fields += info.Table + "." + modules.FilterField(field.Field, info.Delimiter) + ","
+		}
+
+		headField := field.Field
+
+		if field.Joins.Valid() {
+			headField = field.Joins.Last().GetTableName(info.Delimiter) + parameter.FilterParamJoinInfix + field.Field
+			for _, join := range field.Joins {
+				if !modules.InArray(joinTables, join.GetTableName(info.Delimiter)) {
+					joinTables = append(joinTables, join.GetTableName(info.Delimiter))
+					if join.BaseTable == "" {
+						join.BaseTable = info.Table
+					}
+					joins += " left join " + modules.FilterField(join.Table, info.Delimiter) + " " + join.TableAlias + " on " +
+						join.GetTableName(info.Delimiter) + "." + modules.FilterField(join.JoinField, info.Delimiter) + " = " +
+						modules.Delimiter(info.Delimiter, join.BaseTable) + "." + modules.FilterField(join.Field, info.Delimiter)
+				}
+			}
+		}
+
+		if field.Hide {
+			continue
+		}
+		thead = append(thead, TheadItem{
+			Head:       field.Head,
+			Sortable:   field.Sortable,
+			Field:      headField,
+			Hide:       !modules.InArrayWithoutEmpty(params.Columns, headField),
+			Editable:   field.EditAble,
+			EditType:   field.EditType.String(),
+			EditOption: field.EditOptions,
+			Width:      strconv.Itoa(field.Width) + "px",
 		})
 	}
 
 	return thead, fields, joins
 }
 
-func (f FieldList) GetFieldFilterProcessValue(key string, value string) string {
+func (f FieldList) GetFieldFilterProcessValue(key, value, keyIndex string) string {
 	field := f.GetFieldByFieldName(key)
-	if field.FilterProcess != nil {
-		value = field.FilterProcess(value)
+	index := 0
+	if keyIndex != "" {
+		index, _ = strconv.Atoi(keyIndex)
+	}
+	if field.FilterFormFields != nil && len(field.FilterFormFields) > index {
+		if field.FilterFormFields[index].ProcessFn != nil {
+			value = field.FilterFormFields[index].ProcessFn(value)
+		}
 	}
 	return value
 }
@@ -266,7 +423,7 @@ func (f FieldList) GetFieldFilterProcessValue(key string, value string) string {
 func (f FieldList) GetFieldJoinTable(key string) string {
 	field := f.GetFieldByFieldName(key)
 	if field.Exist() {
-		return field.Join.Table
+		return field.Joins.Last().Table
 	}
 	return ""
 }
@@ -276,18 +433,72 @@ func (f FieldList) GetFieldByFieldName(name string) Field {
 		if field.Field == name {
 			return field
 		}
+		if JoinField(field.Joins.Last().GetTableName(), field.Field) == name {
+			return field
+		}
 	}
 	return Field{}
 }
 
+// Join store join table info. For example:
+//
+// Join {
+//     BaseTable:   "users",
+//     Field:       "role_id",
+//     Table:       "roles",
+//     JoinField:   "id",
+// }
+//
+// It will generate the join table sql like:
+//
+// ... left join roles on roles.id = users.role_id ...
+//
 type Join struct {
-	Table     string
-	Field     string
-	JoinField string
+	Table      string
+	TableAlias string
+	Field      string
+	JoinField  string
+	BaseTable  string
+}
+
+type Joins []Join
+
+func JoinField(table, field string) string {
+	return table + parameter.FilterParamJoinInfix + field
+}
+
+func GetJoinField(field string) string {
+	return strings.Split(field, parameter.FilterParamJoinInfix)[1]
+}
+
+func (j Joins) Valid() bool {
+	for i := 0; i < len(j); i++ {
+		if j[i].Valid() {
+			return true
+		}
+	}
+	return false
+}
+
+func (j Joins) Last() Join {
+	if len(j) > 0 {
+		return j[len(j)-1]
+	}
+	return Join{}
 }
 
 func (j Join) Valid() bool {
 	return j.Table != "" && j.Field != "" && j.JoinField != ""
+}
+
+func (j Join) GetTableName(delimiter ...string) string {
+	if j.TableAlias != "" {
+		return j.TableAlias
+	}
+	if len(delimiter) > 0 {
+		return delimiter[0] + j.Table + delimiter[0]
+	}
+	return j.Table
 }
 
 var JoinFieldValueDelimiter = utils.Uuid(8)
@@ -316,6 +527,7 @@ func (t TabHeaders) Add(header string) TabHeaders {
 type GetDataFn func(param parameter.Parameters) ([]map[string]interface{}, int)
 
 type DeleteFn func(ids []string) error
+type DeleteFnWithRes func(ids []string, res error) error
 
 type Sort uint8
 
@@ -323,6 +535,13 @@ const (
 	SortDesc Sort = iota
 	SortAsc
 )
+
+type primaryKey struct {
+	Type db.DatabaseType
+	Name string
+}
+
+type ExportProcessFn func(param parameter.Parameters) (PanelInfo, error)
 
 // InfoPanel
 type InfoPanel struct {
@@ -343,6 +562,11 @@ type InfoPanel struct {
 	PageSizeList    []int
 	DefaultPageSize int
 
+	ExportType      int
+	ExportProcessFn ExportProcessFn
+
+	primaryKey primaryKey
+
 	IsHideNewButton    bool
 	IsHideExportButton bool
 	IsHideEditButton   bool
@@ -352,7 +576,11 @@ type InfoPanel struct {
 	IsHideRowSelector  bool
 	IsHidePagination   bool
 	IsHideFilterArea   bool
+	IsHideQueryInfo    bool
 	FilterFormLayout   form.Layout
+
+	FilterFormHeadWidth  int
+	FilterFormInputWidth int
 
 	Wheres    Wheres
 	WhereRaws WhereRaw
@@ -367,14 +595,34 @@ type InfoPanel struct {
 	PreDeleteFn DeleteFn
 	DeleteFn    DeleteFn
 
+	DeleteHookWithRes DeleteFnWithRes
+
 	GetDataFn GetDataFn
 
 	processChains DisplayProcessFnChains
 
-	ActionButtons Buttons
-	Action        template.HTML
-	HeaderHtml    template.HTML
-	FooterHtml    template.HTML
+	ActionButtons    Buttons
+	ActionButtonFold bool
+
+	DisplayGeneratorRecords map[string]struct{}
+
+	QueryFilterFn       QueryFilterFn
+	UpdateParametersFns []UpdateParametersFn
+
+	Wrapper ContentWrapper
+
+	// column operation buttons
+	Action     template.HTML
+	HeaderHtml template.HTML
+	FooterHtml template.HTML
+
+	PageError     errors.PageError
+	PageErrorHTML template.HTML
+
+	NoCompress  bool
+	HideSideBar bool
+
+	AutoRefresh uint
 }
 
 type Where struct {
@@ -387,6 +635,7 @@ type Where struct {
 type Wheres []Where
 
 func (whs Wheres) Statement(wheres, delimiter string, whereArgs []interface{}, existKeys, columns []string) (string, []interface{}) {
+	pwheres := ""
 	for k, wh := range whs {
 
 		whFieldArr := strings.Split(wh.Field, ".")
@@ -412,14 +661,17 @@ func (whs Wheres) Statement(wheres, delimiter string, whereArgs []interface{}, e
 			}
 
 			if whTable != "" {
-				wheres += whTable + "." + modules.FilterField(whField, delimiter) + " " + wh.Operator + " ? " + joinMark + " "
+				pwheres += whTable + "." + modules.FilterField(whField, delimiter) + " " + wh.Operator + " ? " + joinMark + " "
 			} else {
-				wheres += modules.FilterField(whField, delimiter) + " " + wh.Operator + " ? " + joinMark + " "
+				pwheres += modules.FilterField(whField, delimiter) + " " + wh.Operator + " ? " + joinMark + " "
 			}
 			whereArgs = append(whereArgs, wh.Arg)
 		}
 	}
-	return wheres, whereArgs
+	if wheres != "" && pwheres != "" {
+		wheres += " and "
+	}
+	return wheres + pwheres, whereArgs
 }
 
 type WhereRaw struct {
@@ -432,26 +684,21 @@ func (wh WhereRaw) check() int {
 	for i := 0; i < len(wh.Raw); i++ {
 		if wh.Raw[i] == ' ' {
 			continue
-		} else {
-			if wh.Raw[i] == 'a' {
-				if len(wh.Raw) < i+3 {
-					break
-				} else {
-					if wh.Raw[i+1] == 'n' && wh.Raw[i+2] == 'd' {
-						index = i + 3
-					}
-				}
-			} else if wh.Raw[i] == 'o' {
-				if len(wh.Raw) < i+2 {
-					break
-				} else {
-					if wh.Raw[i+1] == 'r' {
-						index = i + 2
-					}
-				}
-			} else {
+		}
+		if wh.Raw[i] == 'a' {
+			if len(wh.Raw) < i+3 {
 				break
+			} else if wh.Raw[i+1] == 'n' && wh.Raw[i+2] == 'd' {
+				index = i + 3
 			}
+		} else if wh.Raw[i] == 'o' {
+			if len(wh.Raw) < i+2 {
+				break
+			} else if wh.Raw[i+1] == 'r' {
+				index = i + 2
+			}
+		} else {
+			break
 		}
 	}
 	return index
@@ -508,31 +755,51 @@ func (h Handler) Wrap() context.Handler {
 	}
 }
 
+type ContentWrapper func(content template.HTML) template.HTML
+
 type Action interface {
 	Js() template.JS
 	BtnAttribute() template.HTML
 	BtnClass() template.HTML
 	ExtContent() template.HTML
+	FooterContent() template.HTML
 	SetBtnId(btnId string)
+	SetBtnData(data interface{})
 	GetCallbacks() context.Node
 }
 
+type NilAction struct{}
+
+func (def *NilAction) SetBtnId(btnId string)        {}
+func (def *NilAction) SetBtnData(data interface{})  {}
+func (def *NilAction) Js() template.JS              { return "" }
+func (def *NilAction) BtnAttribute() template.HTML  { return "" }
+func (def *NilAction) BtnClass() template.HTML      { return "" }
+func (def *NilAction) ExtContent() template.HTML    { return "" }
+func (def *NilAction) FooterContent() template.HTML { return "" }
+func (def *NilAction) GetCallbacks() context.Node   { return context.Node{} }
+
+type Actions []Action
+
 type DefaultAction struct {
-	Attr template.HTML
-	JS   template.JS
-	Ext  template.HTML
+	Attr   template.HTML
+	JS     template.JS
+	Ext    template.HTML
+	Footer template.HTML
 }
 
-func NewDefaultAction(attr, ext template.HTML, js template.JS) *DefaultAction {
-	return &DefaultAction{Attr: attr, Ext: ext, JS: js}
+func NewDefaultAction(attr, ext, footer template.HTML, js template.JS) *DefaultAction {
+	return &DefaultAction{Attr: attr, Ext: ext, Footer: footer, JS: js}
 }
 
-func (def *DefaultAction) SetBtnId(btnId string)       {}
-func (def *DefaultAction) Js() template.JS             { return def.JS }
-func (def *DefaultAction) BtnAttribute() template.HTML { return def.Attr }
-func (def *DefaultAction) BtnClass() template.HTML     { return "" }
-func (def *DefaultAction) ExtContent() template.HTML   { return def.Ext }
-func (def *DefaultAction) GetCallbacks() context.Node  { return context.Node{} }
+func (def *DefaultAction) SetBtnId(btnId string)        {}
+func (def *DefaultAction) SetBtnData(data interface{})  {}
+func (def *DefaultAction) Js() template.JS              { return def.JS }
+func (def *DefaultAction) BtnAttribute() template.HTML  { return def.Attr }
+func (def *DefaultAction) BtnClass() template.HTML      { return "" }
+func (def *DefaultAction) ExtContent() template.HTML    { return def.Ext }
+func (def *DefaultAction) FooterContent() template.HTML { return def.Footer }
+func (def *DefaultAction) GetCallbacks() context.Node   { return context.Node{} }
 
 var _ Action = (*DefaultAction)(nil)
 
@@ -542,16 +809,20 @@ const DefaultPageSize = 10
 
 func NewInfoPanel(pk string) *InfoPanel {
 	return &InfoPanel{
-		curFieldListIndex: -1,
-		PageSizeList:      DefaultPageSizeList,
-		DefaultPageSize:   DefaultPageSize,
-		processChains:     make(DisplayProcessFnChains, 0),
-		Buttons:           make(Buttons, 0),
-		Callbacks:         make(Callbacks, 0),
-		Wheres:            make([]Where, 0),
-		WhereRaws:         WhereRaw{},
-		SortField:         pk,
-		TableLayout:       "auto",
+		curFieldListIndex:       -1,
+		PageSizeList:            DefaultPageSizeList,
+		DefaultPageSize:         DefaultPageSize,
+		processChains:           make(DisplayProcessFnChains, 0),
+		Buttons:                 make(Buttons, 0),
+		Callbacks:               make(Callbacks, 0),
+		DisplayGeneratorRecords: make(map[string]struct{}),
+		Wheres:                  make([]Where, 0),
+		WhereRaws:               WhereRaw{},
+		SortField:               pk,
+		TableLayout:             "auto",
+		FilterFormInputWidth:    10,
+		FilterFormHeadWidth:     2,
+		AutoRefresh:             0,
 	}
 }
 
@@ -571,45 +842,65 @@ func (i *InfoPanel) WhereRaw(raw string, arg ...interface{}) *InfoPanel {
 	return i
 }
 
-func (i *InfoPanel) AddButton(title template.HTML, icon string, action Action, color ...template.HTML) *InfoPanel {
-	id := "info-btn-" + utils.Uuid(10)
-	action.SetBtnId(id)
-	if len(color) == 0 {
-		i.Buttons = append(i.Buttons, DefaultButton{Title: title, Id: id, Action: action, Icon: icon})
-	}
-	if len(color) == 1 {
-		i.Buttons = append(i.Buttons, DefaultButton{Title: title, Color: color[0], Id: id, Action: action, Icon: icon})
-	}
-	if len(color) >= 2 {
-		i.Buttons = append(i.Buttons, DefaultButton{Title: title, Color: color[0], TextColor: color[1], Id: id, Action: action, Icon: icon})
-	}
-	i.Callbacks = i.Callbacks.AddCallback(action.GetCallbacks())
+func (i *InfoPanel) AddSelectBox(placeholder string, options FieldOptions, action Action, width ...int) *InfoPanel {
+	options = append(FieldOptions{{Value: "", Text: language.Get("All")}}, options...)
+	action.SetBtnData(options)
+	i.addButton(GetDefaultSelection(placeholder, options, action, width...)).
+		addFooterHTML(action.FooterContent()).
+		addCallback(action.GetCallbacks())
+
 	return i
 }
 
-func (i *InfoPanel) AddActionButton(title template.HTML, action Action, ids ...string) *InfoPanel {
-	id := ""
-	if len(ids) > 0 {
-		id = ids[0]
-	} else {
-		id = "action-info-btn-" + utils.Uuid(10)
-	}
-	action.SetBtnId(id)
-	i.ActionButtons = append(i.ActionButtons, ActionButton{Title: title, Id: id, Action: action})
-	i.Callbacks = i.Callbacks.AddCallback(action.GetCallbacks())
+func (i *InfoPanel) ExportValue() *InfoPanel {
+	i.ExportType = 1
+	return i
+}
+
+func (i *InfoPanel) IsExportValue() bool {
+	return i.ExportType == 1
+}
+
+func (i *InfoPanel) AddButtonRaw(btn Button, action Action) *InfoPanel {
+	i.Buttons = append(i.Buttons, btn)
+	i.addFooterHTML(action.FooterContent()).addCallback(action.GetCallbacks())
+	return i
+}
+
+func (i *InfoPanel) AddButton(title template.HTML, icon string, action Action, color ...template.HTML) *InfoPanel {
+	i.addButton(GetDefaultButtonGroup(title, icon, action, color...)).
+		addFooterHTML(action.FooterContent()).
+		addCallback(action.GetCallbacks())
+	return i
+}
+
+func (i *InfoPanel) AddActionIconButton(icon string, action Action, ids ...string) *InfoPanel {
+	i.addActionButton(GetActionIconButton(icon, action, ids...)).
+		addFooterHTML(action.FooterContent()).
+		addCallback(action.GetCallbacks())
+
 	return i
 }
 
 func (i *InfoPanel) AddActionButtonFront(title template.HTML, action Action, ids ...string) *InfoPanel {
-	id := ""
-	if len(ids) > 0 {
-		id = ids[0]
-	} else {
-		id = "action-info-btn-" + utils.Uuid(10)
-	}
-	action.SetBtnId(id)
-	i.ActionButtons = append([]Button{ActionButton{Title: title, Id: id, Action: action}}, i.ActionButtons...)
-	i.Callbacks = i.Callbacks.AddCallback(action.GetCallbacks())
+	i.SetActionButtonFold()
+	i.ActionButtons = append([]Button{GetActionButton(title, action, ids...)}, i.ActionButtons...)
+	i.addFooterHTML(action.FooterContent()).
+		addCallback(action.GetCallbacks())
+	return i
+}
+
+func (i *InfoPanel) AddActionButton(title template.HTML, action Action, ids ...string) *InfoPanel {
+	i.SetActionButtonFold()
+	i.addActionButton(GetActionButton(title, action, ids...)).
+		addFooterHTML(action.FooterContent()).
+		addCallback(action.GetCallbacks())
+
+	return i
+}
+
+func (i *InfoPanel) SetActionButtonFold() *InfoPanel {
+	i.ActionButtonFold = true
 	return i
 }
 
@@ -653,8 +944,33 @@ func (i *InfoPanel) AddXssJsFilter() *InfoPanel {
 	return i
 }
 
+func (i *InfoPanel) SetExportProcessFn(fn ExportProcessFn) *InfoPanel {
+	i.ExportProcessFn = fn
+	return i
+}
+
 func (i *InfoPanel) SetDeleteHook(fn DeleteFn) *InfoPanel {
 	i.DeleteHook = fn
+	return i
+}
+
+func (i *InfoPanel) SetDeleteHookWithRes(fn DeleteFnWithRes) *InfoPanel {
+	i.DeleteHookWithRes = fn
+	return i
+}
+
+func (i *InfoPanel) SetQueryFilterFn(fn QueryFilterFn) *InfoPanel {
+	i.QueryFilterFn = fn
+	return i
+}
+
+func (i *InfoPanel) AddUpdateParametersFn(fn UpdateParametersFn) *InfoPanel {
+	i.UpdateParametersFns = append(i.UpdateParametersFns, fn)
+	return i
+}
+
+func (i *InfoPanel) SetWrapper(wrapper ContentWrapper) *InfoPanel {
+	i.Wrapper = wrapper
 	return i
 }
 
@@ -673,9 +989,74 @@ func (i *InfoPanel) SetGetDataFn(fn GetDataFn) *InfoPanel {
 	return i
 }
 
+func (i *InfoPanel) SetPrimaryKey(name string, typ db.DatabaseType) *InfoPanel {
+	i.primaryKey = primaryKey{Name: name, Type: typ}
+	return i
+}
+
 func (i *InfoPanel) SetTableFixed() *InfoPanel {
 	i.TableLayout = "fixed"
 	return i
+}
+
+func (i *InfoPanel) AddColumn(head string, fun FieldFilterFn) *InfoPanel {
+	i.FieldList = append(i.FieldList, Field{
+		Head:     head,
+		Field:    head,
+		TypeName: db.Varchar,
+		Sortable: false,
+		EditAble: false,
+		EditType: table.Text,
+		FieldDisplay: FieldDisplay{
+			Display:              fun,
+			DisplayProcessChains: chooseDisplayProcessChains(i.processChains),
+		},
+	})
+	i.curFieldListIndex++
+	return i
+}
+
+func (i *InfoPanel) AddColumnButtons(head string, buttons ...Button) *InfoPanel {
+	var content, js template.HTML
+	for _, btn := range buttons {
+		btn.GetAction().SetBtnId("." + btn.ID())
+		btnContent, btnJs := btn.Content()
+		content += btnContent
+		js += template.HTML(btnJs)
+		i.FooterHtml += template.HTML(ParseTableDataTmpl(btn.GetAction().FooterContent()))
+		i.Callbacks = i.Callbacks.AddCallback(btn.GetAction().GetCallbacks())
+	}
+	i.FooterHtml += template.HTML("<script>") + template.HTML(ParseTableDataTmpl(js)) + template.HTML("</script>")
+	i.FieldList = append(i.FieldList, Field{
+		Head:     head,
+		Field:    head,
+		TypeName: db.Varchar,
+		Sortable: false,
+		EditAble: false,
+		EditType: table.Text,
+		FieldDisplay: FieldDisplay{
+			Display: func(value FieldModel) interface{} {
+				pk := db.GetValueFromDatabaseType(i.primaryKey.Type, value.Row[i.primaryKey.Name], i.isFromJSON())
+				var v = make(map[string]InfoItem)
+				for key, item := range value.Row {
+					itemValue := fmt.Sprintf("%v", item)
+					v[key] = InfoItem{Value: itemValue, Content: template.HTML(itemValue)}
+				}
+				return template.HTML(ParseTableDataTmplWithID(pk.HTML(), string(content), v))
+			},
+			DisplayProcessChains: chooseDisplayProcessChains(i.processChains),
+		},
+	})
+	i.curFieldListIndex++
+	return i
+}
+
+func (i *InfoPanel) AddFieldTr(ctx *context.Context, head, field string, typeName db.DatabaseType) *InfoPanel {
+	return i.AddFieldWithTranslation(ctx, head, field, typeName)
+}
+
+func (i *InfoPanel) AddFieldWithTranslation(ctx *context.Context, head, field string, typeName db.DatabaseType) *InfoPanel {
+	return i.AddField(language.GetWithLang(head, ctx.Lang()), field, typeName)
 }
 
 func (i *InfoPanel) AddField(head, field string, typeName db.DatabaseType) *InfoPanel {
@@ -684,6 +1065,7 @@ func (i *InfoPanel) AddField(head, field string, typeName db.DatabaseType) *Info
 		Field:    field,
 		TypeName: typeName,
 		Sortable: false,
+		Joins:    make(Joins, 0),
 		EditAble: false,
 		EditType: table.Text,
 		FieldDisplay: FieldDisplay{
@@ -697,11 +1079,115 @@ func (i *InfoPanel) AddField(head, field string, typeName db.DatabaseType) *Info
 	return i
 }
 
+func (i *InfoPanel) AddFilter(head, field string, typeName db.DatabaseType, fn UpdateParametersFn, filterType ...FilterType) *InfoPanel {
+	return i.AddField(head, field, typeName).FieldHide().FieldFilterable(filterType...).AddUpdateParametersFn(fn)
+}
+
 // Field attribute setting functions
 // ====================================================
 
 func (i *InfoPanel) FieldDisplay(filter FieldFilterFn) *InfoPanel {
 	i.FieldList[i.curFieldListIndex].Display = filter
+	return i
+}
+
+type FieldLabelParam struct {
+	Color template.HTML
+	Type  string
+}
+
+func (i *InfoPanel) FieldLabel(args ...FieldLabelParam) *InfoPanel {
+	i.addDisplayChains(displayFnGens["label"].Get(args))
+	return i
+}
+
+func (i *InfoPanel) FieldImage(width, height string, prefix ...string) *InfoPanel {
+	i.addDisplayChains(displayFnGens["image"].Get(width, height, prefix))
+	return i
+}
+
+func (i *InfoPanel) FieldBool(flags ...string) *InfoPanel {
+	i.addDisplayChains(displayFnGens["bool"].Get(flags))
+	return i
+}
+
+func (i *InfoPanel) FieldLink(src string, openInNewTab ...bool) *InfoPanel {
+	i.addDisplayChains(displayFnGens["link"].Get(src, openInNewTab))
+	return i
+}
+
+func (i *InfoPanel) FieldFileSize() *InfoPanel {
+	i.addDisplayChains(displayFnGens["filesize"].Get())
+	return i
+}
+
+func (i *InfoPanel) FieldDate(format string) *InfoPanel {
+	i.addDisplayChains(displayFnGens["date"].Get())
+	return i
+}
+
+func (i *InfoPanel) FieldIcon(icons map[string]string, defaultIcon string) *InfoPanel {
+	i.addDisplayChains(displayFnGens["link"].Get(icons, defaultIcon))
+	return i
+}
+
+type FieldDotColor string
+
+const (
+	FieldDotColorDanger  FieldDotColor = "danger"
+	FieldDotColorInfo    FieldDotColor = "info"
+	FieldDotColorPrimary FieldDotColor = "primary"
+	FieldDotColorSuccess FieldDotColor = "success"
+)
+
+func (i *InfoPanel) FieldDot(icons map[string]FieldDotColor, defaultDot FieldDotColor) *InfoPanel {
+	i.addDisplayChains(displayFnGens["dot"].Get(icons, defaultDot))
+	return i
+}
+
+type FieldProgressBarData struct {
+	Style string
+	Size  string
+	Max   int
+}
+
+func (i *InfoPanel) FieldProgressBar(data ...FieldProgressBarData) *InfoPanel {
+	i.addDisplayChains(displayFnGens["progressbar"].Get(data))
+	return i
+}
+
+func (i *InfoPanel) FieldLoading(data []string) *InfoPanel {
+	i.addDisplayChains(displayFnGens["loading"].Get(data))
+	return i
+}
+
+func (i *InfoPanel) FieldDownLoadable(prefix ...string) *InfoPanel {
+	i.addDisplayChains(displayFnGens["downloadable"].Get(prefix))
+	return i
+}
+
+func (i *InfoPanel) FieldCopyable(prefix ...string) *InfoPanel {
+	i.addDisplayChains(displayFnGens["copyable"].Get(prefix))
+	if _, ok := i.DisplayGeneratorRecords["copyable"]; !ok {
+		i.addFooterHTML(`<script>` + displayFnGens["copyable"].JS() + `</script>`)
+		i.DisplayGeneratorRecords["copyable"] = struct{}{}
+	}
+	return i
+}
+
+type FieldGetImgArrFn func(value string) []string
+
+func (i *InfoPanel) FieldCarousel(fn FieldGetImgArrFn, size ...int) *InfoPanel {
+	i.addDisplayChains(displayFnGens["carousel"].Get(fn, size))
+	return i
+}
+
+func (i *InfoPanel) FieldQrcode() *InfoPanel {
+	i.addDisplayChains(displayFnGens["qrcode"].Get())
+	if _, ok := i.DisplayGeneratorRecords["qrcode"]; !ok {
+		i.addFooterHTML(`<script>` + displayFnGens["qrcode"].JS() + `</script>`)
+		i.DisplayGeneratorRecords["qrcode"] = struct{}{}
+	}
 	return i
 }
 
@@ -715,7 +1201,27 @@ func (i *InfoPanel) FieldSortable() *InfoPanel {
 	return i
 }
 
-func (i *InfoPanel) FieldEditOptions(options []map[string]string) *InfoPanel {
+func (i *InfoPanel) FieldEditOptions(options FieldOptions, extra ...map[string]string) *InfoPanel {
+	if i.FieldList[i.curFieldListIndex].EditType.IsSwitch() {
+		if len(extra) == 0 {
+			options[0].Extra = map[string]string{
+				"size":     "small",
+				"onColor":  "primary",
+				"offColor": "default",
+			}
+		} else {
+			if extra[0]["size"] == "" {
+				extra[0]["size"] = "small"
+			}
+			if extra[0]["onColor"] == "" {
+				extra[0]["onColor"] = "primary"
+			}
+			if extra[0]["offColor"] == "" {
+				extra[0]["offColor"] = "default"
+			}
+			options[0].Extra = extra[0]
+		}
+	}
 	i.FieldList[i.curFieldListIndex].EditOptions = options
 	return i
 }
@@ -728,49 +1234,160 @@ func (i *InfoPanel) FieldEditAble(editType ...table.Type) *InfoPanel {
 	return i
 }
 
+func (i *InfoPanel) FieldAsEditParam() *InfoPanel {
+	i.FieldList[i.curFieldListIndex].IsEditParam = true
+	return i
+}
+
+func (i *InfoPanel) FieldAsDeleteParam() *InfoPanel {
+	i.FieldList[i.curFieldListIndex].IsDeleteParam = true
+	return i
+}
+
+func (i *InfoPanel) FieldAsDetailParam() *InfoPanel {
+	i.FieldList[i.curFieldListIndex].IsDetailParam = true
+	return i
+}
+
 func (i *InfoPanel) FieldFixed() *InfoPanel {
 	i.FieldList[i.curFieldListIndex].Fixed = true
 	return i
 }
 
 type FilterType struct {
-	FormType form.Type
-	Operator FilterOperator
-	Head     string
-	HelpMsg  template.HTML
+	Options     FieldOptions
+	Process     func(string) string
+	OptionExt   map[string]interface{}
+	FormType    form.Type
+	HelpMsg     template.HTML
+	Style       template.HTMLAttr
+	Operator    FilterOperator
+	Head        string
+	Placeholder string
+	Width       int
+	HeadWidth   int
+	InputWidth  int
+	NoHead      bool
+	NoIcon      bool
 }
 
 func (i *InfoPanel) FieldFilterable(filterType ...FilterType) *InfoPanel {
 	i.FieldList[i.curFieldListIndex].Filterable = true
-	if len(filterType) > 0 {
-		i.FieldList[i.curFieldListIndex].FilterOperator = filterType[0].Operator
-		if uint8(filterType[0].FormType) == 0 {
-			i.FieldList[i.curFieldListIndex].FilterType = form.Text
+
+	if len(filterType) == 0 {
+		i.FieldList[i.curFieldListIndex].FilterFormFields = append(i.FieldList[i.curFieldListIndex].FilterFormFields,
+			FilterFormField{
+				Type:        form.Text,
+				Head:        i.FieldList[i.curFieldListIndex].Head,
+				Placeholder: language.Get("input") + " " + i.FieldList[i.curFieldListIndex].Head,
+			})
+	}
+
+	for _, filter := range filterType {
+		var ff FilterFormField
+		ff.Operator = filter.Operator
+		if filter.FormType == form.Default {
+			ff.Type = form.Text
 		} else {
-			i.FieldList[i.curFieldListIndex].FilterType = filterType[0].FormType
+			ff.Type = filter.FormType
 		}
-		i.FieldList[i.curFieldListIndex].FilterHead = filterType[0].Head
-		i.FieldList[i.curFieldListIndex].FilterHelpMsg = filterType[0].HelpMsg
-	} else {
-		i.FieldList[i.curFieldListIndex].FilterType = form.Text
+		ff.Head = modules.AorB(!filter.NoHead && filter.Head == "",
+			i.FieldList[i.curFieldListIndex].Head, filter.Head)
+		ff.Width = filter.Width
+		ff.HeadWidth = filter.HeadWidth
+		ff.InputWidth = filter.InputWidth
+		ff.HelpMsg = filter.HelpMsg
+		ff.NoIcon = filter.NoIcon
+		ff.Style = filter.Style
+		ff.ProcessFn = filter.Process
+		ff.Placeholder = modules.AorB(filter.Placeholder == "", language.Get("input")+" "+ff.Head, filter.Placeholder)
+		ff.Options = filter.Options
+		if len(filter.OptionExt) > 0 {
+			s, _ := json.Marshal(filter.OptionExt)
+			ff.OptionExt = template.JS(s)
+		}
+		i.FieldList[i.curFieldListIndex].FilterFormFields = append(i.FieldList[i.curFieldListIndex].FilterFormFields, ff)
+	}
+
+	return i
+}
+
+func (i *InfoPanel) FieldFilterOptions(options FieldOptions) *InfoPanel {
+	i.FieldList[i.curFieldListIndex].FilterFormFields[0].Options = options
+	i.FieldList[i.curFieldListIndex].FilterFormFields[0].OptionExt = `{"allowClear": "true"}`
+	return i
+}
+
+func (i *InfoPanel) FieldFilterOptionsFromTable(table, textFieldName, valueFieldName string, process ...OptionTableQueryProcessFn) *InfoPanel {
+	var fn OptionTableQueryProcessFn
+	if len(process) > 0 {
+		fn = process[0]
+	}
+	i.FieldList[i.curFieldListIndex].FilterFormFields[0].OptionTable = OptionTable{
+		Table:          table,
+		TextField:      textFieldName,
+		ValueField:     valueFieldName,
+		QueryProcessFn: fn,
 	}
 	return i
 }
 
-func (i *InfoPanel) FieldFilterOptions(options []map[string]string) *InfoPanel {
-	i.FieldList[i.curFieldListIndex].FilterOptions = options
-	i.FieldList[i.curFieldListIndex].FilterOptionExt = `{"allowClear": "true"}`
-	return i
-}
-
 func (i *InfoPanel) FieldFilterProcess(process func(string) string) *InfoPanel {
-	i.FieldList[i.curFieldListIndex].FilterProcess = process
+	i.FieldList[i.curFieldListIndex].FilterFormFields[0].ProcessFn = process
 	return i
 }
 
 func (i *InfoPanel) FieldFilterOptionExt(m map[string]interface{}) *InfoPanel {
 	s, _ := json.Marshal(m)
-	i.FieldList[i.curFieldListIndex].FilterOptionExt = template.JS(s)
+	i.FieldList[i.curFieldListIndex].FilterFormFields[0].OptionExt = template.JS(s)
+	return i
+}
+
+func (i *InfoPanel) FieldFilterOnSearch(url string, handler Handler, delay ...int) *InfoPanel {
+	ext, callback := searchJS(i.FieldList[i.curFieldListIndex].FilterFormFields[0].OptionExt, url, handler, delay...)
+	i.FieldList[i.curFieldListIndex].FilterFormFields[0].OptionExt = ext
+	i.Callbacks = append(i.Callbacks, callback)
+	return i
+}
+
+func (i *InfoPanel) FieldFilterOnChooseCustom(js template.HTML) *InfoPanel {
+	i.FooterHtml += chooseCustomJS(i.FieldList[i.curFieldListIndex].Field, js)
+	return i
+}
+
+func (i *InfoPanel) FieldFilterOnChooseMap(m map[string]LinkField) *InfoPanel {
+	i.FooterHtml += chooseMapJS(i.FieldList[i.curFieldListIndex].Field, m)
+	return i
+}
+
+func (i *InfoPanel) FieldFilterOnChoose(val, field string, value template.HTML) *InfoPanel {
+	i.FooterHtml += chooseJS(i.FieldList[i.curFieldListIndex].Field, field, val, value)
+	return i
+}
+
+func (i *InfoPanel) OperationURL(id string) string {
+	return config.Url("/operation/" + utils.WrapURL(id))
+}
+
+func (i *InfoPanel) FieldFilterOnChooseAjax(field, url string, handler Handler) *InfoPanel {
+	js, callback := chooseAjax(i.FieldList[i.curFieldListIndex].Field, field, i.OperationURL(url), handler)
+	i.FooterHtml += js
+	i.Callbacks = append(i.Callbacks, callback)
+	return i
+}
+
+func (i *InfoPanel) FieldFilterOnChooseHide(value string, field ...string) *InfoPanel {
+	i.FooterHtml += chooseHideJS(i.FieldList[i.curFieldListIndex].Field, value, field...)
+	return i
+}
+
+func (i *InfoPanel) FieldFilterOnChooseShow(value string, field ...string) *InfoPanel {
+	i.FooterHtml += chooseShowJS(i.FieldList[i.curFieldListIndex].Field, value, field...)
+	return i
+}
+
+func (i *InfoPanel) FieldFilterOnChooseDisable(value string, field ...string) *InfoPanel {
+	i.FooterHtml += chooseDisableJS(i.FieldList[i.curFieldListIndex].Field, value, field...)
 	return i
 }
 
@@ -780,7 +1397,7 @@ func (i *InfoPanel) FieldHide() *InfoPanel {
 }
 
 func (i *InfoPanel) FieldJoin(join Join) *InfoPanel {
-	i.FieldList[i.curFieldListIndex].Join = join
+	i.FieldList[i.curFieldListIndex].Joins = append(i.FieldList[i.curFieldListIndex].Joins, join)
 	return i
 }
 
@@ -816,8 +1433,8 @@ func (i *InfoPanel) FieldToLower() *InfoPanel {
 
 func (i *InfoPanel) FieldXssFilter() *InfoPanel {
 	i.FieldList[i.curFieldListIndex].DisplayProcessChains = i.FieldList[i.curFieldListIndex].DisplayProcessChains.
-		Add(func(s string) string {
-			return html.EscapeString(s)
+		Add(func(value FieldModel) interface{} {
+			return html.EscapeString(value.Value)
 		})
 	return i
 }
@@ -882,6 +1499,16 @@ func (i *InfoPanel) SetFilterFormLayout(layout form.Layout) *InfoPanel {
 	return i
 }
 
+func (i *InfoPanel) SetFilterFormHeadWidth(w int) *InfoPanel {
+	i.FilterFormHeadWidth = w
+	return i
+}
+
+func (i *InfoPanel) SetFilterFormInputWidth(w int) *InfoPanel {
+	i.FilterFormInputWidth = w
+	return i
+}
+
 func (i *InfoPanel) SetSortField(field string) *InfoPanel {
 	i.SortField = field
 	return i
@@ -903,12 +1530,59 @@ func (i *InfoPanel) SetAction(action template.HTML) *InfoPanel {
 }
 
 func (i *InfoPanel) SetHeaderHtml(header template.HTML) *InfoPanel {
-	i.HeaderHtml = header
+	i.HeaderHtml += header
 	return i
 }
 
 func (i *InfoPanel) SetFooterHtml(footer template.HTML) *InfoPanel {
-	i.FooterHtml = footer
+	i.FooterHtml += footer
+	return i
+}
+
+func (i *InfoPanel) HasError() bool {
+	return i.PageError != nil
+}
+
+func (i *InfoPanel) SetError(err errors.PageError, content ...template.HTML) *InfoPanel {
+	i.PageError = err
+	if len(content) > 0 {
+		i.PageErrorHTML = content[0]
+	}
+	return i
+}
+
+func (i *InfoPanel) SetNoCompress() *InfoPanel {
+	i.NoCompress = true
+	return i
+}
+
+func (i *InfoPanel) SetHideSideBar() *InfoPanel {
+	i.HideSideBar = true
+	return i
+}
+
+func (i *InfoPanel) SetAutoRefresh(interval uint) *InfoPanel {
+	i.AutoRefresh = interval
+	return i
+}
+
+func (i *InfoPanel) Set404Error(content ...template.HTML) *InfoPanel {
+	i.SetError(errors.PageError404, content...)
+	return i
+}
+
+func (i *InfoPanel) Set403Error(content ...template.HTML) *InfoPanel {
+	i.SetError(errors.PageError403, content...)
+	return i
+}
+
+func (i *InfoPanel) Set400Error(content ...template.HTML) *InfoPanel {
+	i.SetError(errors.PageError401, content...)
+	return i
+}
+
+func (i *InfoPanel) Set500Error(content ...template.HTML) *InfoPanel {
+	i.SetError(errors.PageError500, content...)
 	return i
 }
 
@@ -942,6 +1616,11 @@ func (i *InfoPanel) HideFilterArea() *InfoPanel {
 	return i
 }
 
+func (i *InfoPanel) HideQueryInfo() *InfoPanel {
+	i.IsHideQueryInfo = true
+	return i
+}
+
 func (i *InfoPanel) HideEditButton() *InfoPanel {
 	i.IsHideEditButton = true
 	return i
@@ -954,5 +1633,35 @@ func (i *InfoPanel) HideDeleteButton() *InfoPanel {
 
 func (i *InfoPanel) HideDetailButton() *InfoPanel {
 	i.IsHideDetailButton = true
+	return i
+}
+
+func (i *InfoPanel) addFooterHTML(footer template.HTML) *InfoPanel {
+	i.FooterHtml += template.HTML(ParseTableDataTmpl(footer))
+	return i
+}
+
+func (i *InfoPanel) addCallback(node context.Node) *InfoPanel {
+	i.Callbacks = i.Callbacks.AddCallback(node)
+	return i
+}
+
+func (i *InfoPanel) addButton(btn Button) *InfoPanel {
+	i.Buttons = append(i.Buttons, btn)
+	return i
+}
+
+func (i *InfoPanel) addActionButton(btn Button) *InfoPanel {
+	i.ActionButtons = append(i.ActionButtons, btn)
+	return i
+}
+
+func (i *InfoPanel) isFromJSON() bool {
+	return i.GetDataFn != nil
+}
+
+func (i *InfoPanel) addDisplayChains(fn FieldFilterFn) *InfoPanel {
+	i.FieldList[i.curFieldListIndex].DisplayProcessChains =
+		i.FieldList[i.curFieldListIndex].DisplayProcessChains.Add(fn)
 	return i
 }

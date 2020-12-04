@@ -6,6 +6,7 @@ package db
 
 import (
 	"fmt"
+	"html/template"
 	"strconv"
 )
 
@@ -74,7 +75,7 @@ const (
 
 	Interval DatabaseType = "INTERVAL"
 	Boolean  DatabaseType = "BOOLEAN"
-	Bool     DatabaseType = "Bool"
+	Bool     DatabaseType = "BOOL"
 
 	Point   DatabaseType = "POINT"
 	Line    DatabaseType = "LINE"
@@ -191,6 +192,11 @@ func (v Value) String() string {
 	return string(v)
 }
 
+// HTML return the template.HTML value.
+func (v Value) HTML() template.HTML {
+	return template.HTML(v)
+}
+
 func GetValueFromDatabaseType(typ DatabaseType, value interface{}, json bool) Value {
 	if json {
 		return GetValueFromJSONOfDatabaseType(typ, value)
@@ -213,6 +219,12 @@ func GetValueFromSQLOfDatabaseType(typ DatabaseType, value interface{}) Value {
 				return "true"
 			}
 			return "false"
+		}
+		if v, ok := value.(int64); ok {
+			if v == 0 {
+				return "false"
+			}
+			return "true"
 		}
 		return "false"
 	case Contains(typ, IntTypeList):
@@ -253,17 +265,10 @@ func GetValueFromJSONOfDatabaseType(typ DatabaseType, value interface{}) Value {
 	case Contains(typ, IntTypeList):
 		if v, ok := value.(float64); ok {
 			return Value(fmt.Sprintf("%d", int64(v)))
-		} else if v, ok := value.(int64); ok {
-			return Value(fmt.Sprintf("%d", v))
-		} else if v, ok := value.(int); ok {
-			return Value(fmt.Sprintf("%d", v))
 		}
-		return "0"
+		return Value(fmt.Sprintf("%d", value))
 	case Contains(typ, FloatTypeList):
-		if v, ok := value.(float64); ok {
-			return Value(fmt.Sprintf("%f", v))
-		}
-		return "0"
+		return Value(fmt.Sprintf("%f", value))
 	case Contains(typ, UintTypeList):
 		if v, ok := value.([]uint8); ok {
 			return Value(string(v))

@@ -7,6 +7,11 @@ package buffalo
 import (
 	"bytes"
 	"errors"
+	"net/http"
+	neturl "net/url"
+	"regexp"
+	"strings"
+
 	"github.com/GoAdminGroup/go-admin/adapter"
 	"github.com/GoAdminGroup/go-admin/context"
 	"github.com/GoAdminGroup/go-admin/engine"
@@ -16,10 +21,6 @@ import (
 	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/constant"
 	"github.com/GoAdminGroup/go-admin/template/types"
 	"github.com/gobuffalo/buffalo"
-	"net/http"
-	neturl "net/url"
-	"regexp"
-	"strings"
 )
 
 // Buffalo structure value is a Buffalo GoAdmin adapter.
@@ -33,16 +34,23 @@ func init() {
 	engine.Register(new(Buffalo))
 }
 
-func (bu *Buffalo) User(ci interface{}) (models.UserModel, bool) {
-	return bu.GetUser(ci, bu)
+// User implements the method Adapter.User.
+func (bu *Buffalo) User(ctx interface{}) (models.UserModel, bool) {
+	return bu.GetUser(ctx, bu)
 }
 
-func (bu *Buffalo) Use(router interface{}, plugs []plugins.Plugin) error {
-	return bu.GetUse(router, plugs, bu)
+// Use implements the method Adapter.Use.
+func (bu *Buffalo) Use(app interface{}, plugs []plugins.Plugin) error {
+	return bu.GetUse(app, plugs, bu)
 }
 
-func (bu *Buffalo) Content(ctx interface{}, getPanelFn types.GetPanelFn) {
-	bu.GetContent(ctx, getPanelFn, bu)
+func (bu *Buffalo) Run() error                 { panic("not implement") }
+func (bu *Buffalo) DisableLog()                { panic("not implement") }
+func (bu *Buffalo) Static(prefix, path string) { panic("not implement") }
+
+// Content implements the method Adapter.Content.
+func (bu *Buffalo) Content(ctx interface{}, getPanelFn types.GetPanelFn, fn context.NodeProcessor, btns ...types.Button) {
+	bu.GetContent(ctx, getPanelFn, bu, btns, fn)
 }
 
 type HandlerFunc func(ctx buffalo.Context) (types.Panel, error)
@@ -56,19 +64,21 @@ func Content(handler HandlerFunc) buffalo.Handler {
 	}
 }
 
+// SetApp implements the method Adapter.SetApp.
 func (bu *Buffalo) SetApp(app interface{}) error {
 	var (
 		eng *buffalo.App
 		ok  bool
 	)
 	if eng, ok = app.(*buffalo.App); !ok {
-		return errors.New("wrong parameter")
+		return errors.New("buffalo adapter SetApp: wrong parameter")
 	}
 	bu.app = eng
 	return nil
 }
 
-func (bu *Buffalo) AddHandler(method, path string, plug plugins.Plugin) {
+// AddHandler implements the method Adapter.AddHandler.
+func (bu *Buffalo) AddHandler(method, path string, handlers context.Handlers) {
 	url := path
 	reg1 := regexp.MustCompile(":(.*?)/")
 	reg2 := regexp.MustCompile(":(.*?)$")
@@ -87,13 +97,13 @@ func (bu *Buffalo) AddHandler(method, path string, plug plugins.Plugin) {
 
 		for key, param := range params {
 			if c.Request().URL.RawQuery == "" {
-				c.Request().URL.RawQuery += strings.Replace(key, ":", "", -1) + "=" + param[0]
+				c.Request().URL.RawQuery += strings.ReplaceAll(key, ":", "") + "=" + param[0]
 			} else {
-				c.Request().URL.RawQuery += "&" + strings.Replace(key, ":", "", -1) + "=" + param[0]
+				c.Request().URL.RawQuery += "&" + strings.ReplaceAll(key, ":", "") + "=" + param[0]
 			}
 		}
 
-		ctx.SetHandlers(plug.GetHandler(c.Request().URL.Path, strings.ToLower(c.Request().Method))).Next()
+		ctx.SetHandlers(handlers).Next()
 		for key, head := range ctx.Response.Header {
 			c.Response().Header().Set(key, head[0])
 		}
@@ -133,51 +143,66 @@ func getHandleFunc(eng *buffalo.App, method string) HandleFun {
 	}
 }
 
+// Name implements the method Adapter.Name.
 func (bu *Buffalo) Name() string {
 	return "buffalo"
 }
 
+// SetContext implements the method Adapter.SetContext.
 func (bu *Buffalo) SetContext(contextInterface interface{}) adapter.WebFrameWork {
 	var (
 		ctx buffalo.Context
 		ok  bool
 	)
 	if ctx, ok = contextInterface.(buffalo.Context); !ok {
-		panic("wrong parameter")
+		panic("buffalo adapter SetContext: wrong parameter")
 	}
 	return &Buffalo{ctx: ctx}
 }
 
+// Redirect implements the method Adapter.Redirect.
 func (bu *Buffalo) Redirect() {
-	_ = bu.ctx.Redirect(http.StatusFound, config.Get().Url("/login"))
+	_ = bu.ctx.Redirect(http.StatusFound, config.Url(config.GetLoginUrl()))
 }
 
+// SetContentType implements the method Adapter.SetContentType.
 func (bu *Buffalo) SetContentType() {
 	bu.ctx.Response().Header().Set("Content-Type", bu.HTMLContentType())
 }
 
+// Write implements the method Adapter.Write.
 func (bu *Buffalo) Write(body []byte) {
 	bu.ctx.Response().WriteHeader(http.StatusOK)
 	_, _ = bu.ctx.Response().Write(body)
 }
 
+// GetCookie implements the method Adapter.GetCookie.
 func (bu *Buffalo) GetCookie() (string, error) {
 	return bu.ctx.Cookies().Get(bu.CookieKey())
 }
 
+// Lang implements the method Adapter.Lang.
+func (bu *Buffalo) Lang() string {
+	return bu.ctx.Request().URL.Query().Get("__ga_lang")
+}
+
+// Path implements the method Adapter.Path.
 func (bu *Buffalo) Path() string {
 	return bu.ctx.Request().URL.Path
 }
 
+// Method implements the method Adapter.Method.
 func (bu *Buffalo) Method() string {
 	return bu.ctx.Request().Method
 }
 
+// FormParam implements the method Adapter.FormParam.
 func (bu *Buffalo) FormParam() neturl.Values {
 	_ = bu.ctx.Request().ParseMultipartForm(32 << 20)
 	return bu.ctx.Request().PostForm
 }
 
-func (bu *Buffalo) PjaxHeader() string {
-	return bu.ctx.Request().Header.Get(constant.PjaxHeader)
+// IsPjax implements the method Adapter.IsPjax.
+func (bu *Buffalo) IsPjax() bool {
+	return bu.ctx.Request().Header.Get(constant.PjaxHeader) == "true"
 }

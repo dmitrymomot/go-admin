@@ -1,10 +1,12 @@
 package components
 
 import (
+	"html/template"
+
+	"github.com/GoAdminGroup/go-admin/modules/config"
 	"github.com/GoAdminGroup/go-admin/modules/menu"
 	"github.com/GoAdminGroup/go-admin/template/types"
 	"github.com/GoAdminGroup/go-admin/template/types/form"
-	"html/template"
 )
 
 type Base struct {
@@ -34,14 +36,17 @@ func (b Base) Col() types.ColAttribute {
 
 func (b Base) Form() types.FormAttribute {
 	return &FormAttribute{
-		Name:      "form",
-		Content:   []types.FormField{},
-		Url:       "/",
-		Method:    "post",
-		InfoUrl:   "",
-		Layout:    form.LayoutDefault,
-		Title:     "edit",
-		Attribute: b.Attribute,
+		Name:         "form",
+		Content:      []types.FormField{},
+		Url:          "/",
+		Method:       "post",
+		HiddenFields: make(map[string]string),
+		Layout:       form.LayoutDefault,
+		Title:        "edit",
+		Attribute:    b.Attribute,
+		CdnUrl:       config.GetAssetUrl(),
+		HeadWidth:    2,
+		InputWidth:   8,
 	}
 }
 
@@ -81,7 +86,6 @@ func (b Base) Label() types.LabelAttribute {
 func (b Base) Link() types.LinkAttribute {
 	return &LinkAttribute{
 		Name:      "link",
-		NewTab:    false,
 		Content:   "",
 		Attribute: b.Attribute,
 	}
@@ -112,8 +116,6 @@ func (b Base) Row() types.RowAttribute {
 func (b Base) Button() types.ButtonAttribute {
 	return &ButtonAttribute{
 		Name:      "button",
-		Content:   "",
-		Href:      "",
 		Attribute: b.Attribute,
 	}
 }
@@ -121,9 +123,10 @@ func (b Base) Button() types.ButtonAttribute {
 func (b Base) Table() types.TableAttribute {
 	return &TableAttribute{
 		Name:      "table",
-		Thead:     []map[string]string{},
-		InfoList:  []map[string]template.HTML{},
-		Type:      "normal",
+		Thead:     make(types.Thead, 0),
+		InfoList:  make([]map[string]types.InfoItem, 0),
+		Type:      "table",
+		Style:     "hover",
 		Layout:    "auto",
 		Attribute: b.Attribute,
 	}
@@ -132,9 +135,9 @@ func (b Base) Table() types.TableAttribute {
 func (b Base) DataTable() types.DataTableAttribute {
 	return &DataTableAttribute{
 		TableAttribute: *(b.Table().
+			SetStyle("hover").
+			SetName("data-table").
 			SetType("data-table").(*TableAttribute)),
-		EditUrl:   "",
-		NewUrl:    "",
 		Attribute: b.Attribute,
 	}
 }
@@ -142,7 +145,14 @@ func (b Base) DataTable() types.DataTableAttribute {
 func (b Base) Tree() types.TreeAttribute {
 	return &TreeAttribute{
 		Name:      "tree",
-		Tree:      []menu.Item{},
+		Tree:      make([]menu.Item, 0),
+		Attribute: b.Attribute,
+	}
+}
+
+func (b Base) TreeView() types.TreeViewAttribute {
+	return &TreeViewAttribute{
+		Name:      "treeview",
 		Attribute: b.Attribute,
 	}
 }

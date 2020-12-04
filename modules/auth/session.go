@@ -6,15 +6,16 @@ package auth
 
 import (
 	"encoding/json"
+	"net/http"
+	"strconv"
+	"time"
+
 	"github.com/GoAdminGroup/go-admin/context"
 	"github.com/GoAdminGroup/go-admin/modules/config"
 	"github.com/GoAdminGroup/go-admin/modules/db"
 	"github.com/GoAdminGroup/go-admin/modules/db/dialect"
 	"github.com/GoAdminGroup/go-admin/modules/logger"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/modules"
-	"net/http"
-	"strconv"
-	"time"
 )
 
 const DefaultCookieKey = "go_admin_session"
@@ -22,19 +23,21 @@ const DefaultCookieKey = "go_admin_session"
 // NewDBDriver return the default PersistenceDriver.
 func newDBDriver(conn db.Connection) *DBDriver {
 	return &DBDriver{
-		conn: conn,
+		conn:      conn,
+		tableName: "goadmin_session",
 	}
 }
 
 // PersistenceDriver is a driver of storing and getting the session info.
 type PersistenceDriver interface {
-	Load(string) map[string]interface{}
-	Update(sid string, values map[string]interface{})
+	Load(string) (map[string]interface{}, error)
+	Update(sid string, values map[string]interface{}) error
 }
 
 // GetSessionByKey get the session value by key.
-func GetSessionByKey(sesKey, key string, conn db.Connection) interface{} {
-	return newDBDriver(conn).Load(sesKey)[key]
+func GetSessionByKey(sesKey, key string, conn db.Connection) (interface{}, error) {
+	m, err := newDBDriver(conn).Load(sesKey)
+	return m[key], err
 }
 
 // Session contains info of session.
@@ -65,27 +68,30 @@ func (ses *Session) Get(key string) interface{} {
 }
 
 // Add add the session value of key.
-func (ses *Session) Add(key string, value interface{}) {
+func (ses *Session) Add(key string, value interface{}) error {
 	ses.Values[key] = value
-	ses.Driver.Update(ses.Sid, ses.Values)
+	if err := ses.Driver.Update(ses.Sid, ses.Values); err != nil {
+		return err
+	}
 	cookie := http.Cookie{
 		Name:     ses.Cookie,
 		Value:    ses.Sid,
-		MaxAge:   config.Get().SessionLifeTime,
+		MaxAge:   config.GetSessionLifeTime(),
 		Expires:  time.Now().Add(ses.Expires),
 		HttpOnly: true,
 		Path:     "/",
 	}
-	if config.Get().Domain != "" {
-		cookie.Domain = config.Get().Domain
+	if config.GetDomain() != "" {
+		cookie.Domain = config.GetDomain()
 	}
 	ses.Context.SetCookie(&cookie)
+	return nil
 }
 
 // Clear clear a Session.
-func (ses *Session) Clear() {
+func (ses *Session) Clear() error {
 	ses.Values = map[string]interface{}{}
-	ses.Driver.Update(ses.Sid, ses.Values)
+	return ses.Driver.Update(ses.Sid, ses.Values)
 }
 
 // UseDriver set the driver of the Session.
@@ -94,10 +100,13 @@ func (ses *Session) UseDriver(driver PersistenceDriver) {
 }
 
 // StartCtx return a Session from the given Context.
-func (ses *Session) StartCtx(ctx *context.Context) *Session {
+func (ses *Session) StartCtx(ctx *context.Context) (*Session, error) {
 	if cookie, err := ctx.Request.Cookie(ses.Cookie); err == nil && cookie.Value != "" {
 		ses.Sid = cookie.Value
-		valueFromDriver := ses.Driver.Load(cookie.Value)
+		valueFromDriver, err := ses.Driver.Load(cookie.Value)
+		if err != nil {
+			return nil, err
+		}
 		if len(valueFromDriver) > 0 {
 			ses.Values = valueFromDriver
 		}
@@ -105,15 +114,15 @@ func (ses *Session) StartCtx(ctx *context.Context) *Session {
 		ses.Sid = modules.Uuid()
 	}
 	ses.Context = ctx
-	return ses
+	return ses, nil
 }
 
 // InitSession return the default Session.
-func InitSession(ctx *context.Context, conn db.Connection) *Session {
+func InitSession(ctx *context.Context, conn db.Connection) (*Session, error) {
 
 	sessions := new(Session)
 	sessions.UpdateConfig(Config{
-		Expires: time.Second * time.Duration(config.Get().SessionLifeTime),
+		Expires: time.Second * time.Duration(config.GetSessionLifeTime()),
 		Cookie:  DefaultCookieKey,
 	})
 
@@ -125,23 +134,28 @@ func InitSession(ctx *context.Context, conn db.Connection) *Session {
 
 // DBDriver is a driver which uses database as a persistence tool.
 type DBDriver struct {
-	conn db.Connection
+	conn      db.Connection
+	tableName string
 }
 
 // Load implements the PersistenceDriver.Load.
-func (driver *DBDriver) Load(sid string) map[string]interface{} {
-	sesModel, _ := driver.table("goadmin_session").Where("sid", "=", sid).First()
+func (driver *DBDriver) Load(sid string) (map[string]interface{}, error) {
+	sesModel, err := driver.table().Where("sid", "=", sid).First()
+
+	if db.CheckError(err, db.QUERY) {
+		return nil, err
+	}
 
 	if sesModel == nil {
-		return map[string]interface{}{}
+		return map[string]interface{}{}, nil
 	}
 
 	var values map[string]interface{}
-	_ = json.Unmarshal([]byte(sesModel["values"].(string)), &values)
-	return values
+	err = json.Unmarshal([]byte(sesModel["values"].(string)), &values)
+	return values, err
 }
 
-func deleteOverdueSession(conn db.Connection) {
+func (driver *DBDriver) deleteOverdueSession() {
 
 	defer func() {
 		if err := recover(); err != nil {
@@ -151,52 +165,72 @@ func deleteOverdueSession(conn db.Connection) {
 	}()
 
 	var (
-		duration = strconv.Itoa(config.Get().SessionLifeTime + 1000)
-		driver   = config.Get().Databases.GetDefault().Driver
-		cmd      = ``
+		duration   = strconv.Itoa(config.GetSessionLifeTime() + 1000)
+		driverName = config.GetDatabases().GetDefault().Driver
+		raw        = ``
 	)
 
-	// TODO: use dialect module
-	if db.DriverPostgresql == driver {
-		cmd = `delete from goadmin_session where extract(epoch from now()) - ` + duration + ` > extract(epoch from created_at)`
-	} else if db.DriverMysql == driver {
-		cmd = `delete from goadmin_session where unix_timestamp(created_at) < unix_timestamp() - ` + duration
-	} else if db.DriverSqlite == driver {
-		cmd = `delete from goadmin_session where strftime('%s', created_at) < strftime('%s', 'now') - ` + duration
+	if db.DriverPostgresql == driverName {
+		raw = `extract(epoch from now()) - ` + duration + ` > extract(epoch from created_at)`
+	} else if db.DriverMysql == driverName {
+		raw = `unix_timestamp(created_at) < unix_timestamp() - ` + duration
+	} else if db.DriverSqlite == driverName {
+		raw = `strftime('%s', created_at) < strftime('%s', 'now') - ` + duration
+	} else if db.DriverMssql == driverName {
+		raw = `DATEDIFF(second, [created_at], GETDATE()) > ` + duration
 	}
 
-	logger.LogSQL(cmd, nil)
-
-	_, _ = conn.Query(cmd)
+	if raw != "" {
+		_ = driver.table().WhereRaw(raw).Delete()
+	}
 }
 
 // Update implements the PersistenceDriver.Update.
-func (driver *DBDriver) Update(sid string, values map[string]interface{}) {
+func (driver *DBDriver) Update(sid string, values map[string]interface{}) error {
 
-	go deleteOverdueSession(driver.conn)
+	go driver.deleteOverdueSession()
 
 	if sid != "" {
 		if len(values) == 0 {
-			_ = driver.table("goadmin_session").Where("sid", "=", sid).Delete()
-			return
+			err := driver.table().Where("sid", "=", sid).Delete()
+			if db.CheckError(err, db.DELETE) {
+				return err
+			}
 		}
-		valuesByte, _ := json.Marshal(values)
-		sesModel, _ := driver.table("goadmin_session").Where("sid", "=", sid).First()
+		valuesByte, err := json.Marshal(values)
+		if err != nil {
+			return err
+		}
+		sesValue := string(valuesByte)
+		sesModel, _ := driver.table().Where("sid", "=", sid).First()
 		if sesModel == nil {
-			_, _ = driver.table("goadmin_session").Insert(dialect.H{
-				"values": string(valuesByte),
+			if !config.GetNoLimitLoginIP() {
+				err = driver.table().Where("values", "=", sesValue).Delete()
+				if db.CheckError(err, db.DELETE) {
+					return err
+				}
+			}
+			_, err := driver.table().Insert(dialect.H{
+				"values": sesValue,
 				"sid":    sid,
 			})
+			if db.CheckError(err, db.INSERT) {
+				return err
+			}
 		} else {
-			_, _ = driver.table("goadmin_session").
+			_, err := driver.table().
 				Where("sid", "=", sid).
 				Update(dialect.H{
-					"values": string(valuesByte),
+					"values": sesValue,
 				})
+			if db.CheckError(err, db.UPDATE) {
+				return err
+			}
 		}
 	}
+	return nil
 }
 
-func (driver *DBDriver) table(table string) *db.SQL {
-	return db.Table(table).WithDriver(driver.conn)
+func (driver *DBDriver) table() *db.SQL {
+	return db.Table(driver.tableName).WithDriver(driver.conn)
 }

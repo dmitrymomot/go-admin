@@ -7,8 +7,10 @@ CREATE TABLE [goadmin_menu] (
  [order] int   NOT NULL DEFAULT '0',
  [title] varchar(50)   NOT NULL,
  [icon] varchar(50)   NOT NULL,
- [uri] varchar(50)   NOT NULL DEFAULT '',
+ [uri] varchar(3000)   NOT NULL DEFAULT '',
  [header] varchar(150)   DEFAULT NULL,
+ [uuid] varchar(150)   DEFAULT NULL,
+ [plugin_name] varchar(150)   NOT NULL DEFAULT '',
  [created_at] datetime NULL DEFAULT GETDATE(),
  [updated_at] datetime NULL DEFAULT GETDATE(),
  PRIMARY KEY ([id]),
@@ -28,7 +30,6 @@ set  IDENTITY_INSERT [goadmin_menu] OFF
 
 
 
-
 CREATE TABLE[goadmin_operation_log] (
  [id] int   identity(1,1) ,
  [user_id] int   NOT NULL,
@@ -41,6 +42,17 @@ CREATE TABLE[goadmin_operation_log] (
   PRIMARY KEY ([id]),
 ) 
 
+
+CREATE TABLE[goadmin_site] (
+ [id] int   identity(1,1) ,
+ [key] varchar(100)   NOT NULL,
+ [value] text   NOT NULL,
+ [state] tinyint   NOT NULL DEFAULT 0,
+ [description] varchar(3000)   DEFAULT NULL,
+ [created_at] datetime NULL DEFAULT GETDATE(),
+ [updated_at] datetime NULL DEFAULT GETDATE(),
+  PRIMARY KEY ([id]),
+)
 
 
 CREATE TABLE[goadmin_permissions] (

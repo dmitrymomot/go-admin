@@ -5,8 +5,9 @@
 package file
 
 import (
-	"github.com/GoAdminGroup/go-admin/modules/config"
 	"mime/multipart"
+
+	"github.com/GoAdminGroup/go-admin/modules/config"
 )
 
 // LocalFileUploader is an Uploader of local file engine.
@@ -17,7 +18,7 @@ type LocalFileUploader struct {
 // GetLocalFileUploader return the default Uploader.
 func GetLocalFileUploader() Uploader {
 	return &LocalFileUploader{
-		config.Get().Store.Path,
+		config.GetStore().Path,
 	}
 }
 

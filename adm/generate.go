@@ -1,24 +1,22 @@
 package main
 
 import (
+	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
-	"regexp"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/AlecAivazis/survey/v2/core"
-	"github.com/GoAdminGroup/go-admin/modules/config"
 	"github.com/GoAdminGroup/go-admin/modules/db"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/modules"
-	"github.com/GoAdminGroup/go-admin/template/types/form"
-	"github.com/go-ini/ini"
+	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/tools"
 	"github.com/mgutz/ansi"
 	"github.com/schollz/progressbar"
+	"gopkg.in/ini.v1"
 )
 
 var systemGoAdminTables = []string{
@@ -26,6 +24,7 @@ var systemGoAdminTables = []string{
 	"goadmin_operation_log",
 	"goadmin_permissions",
 	"goadmin_role_menu",
+	"goadmin_site",
 	"goadmin_roles",
 	"goadmin_session",
 	"goadmin_users",
@@ -34,37 +33,33 @@ var systemGoAdminTables = []string{
 	"goadmin_user_permissions",
 }
 
-func generating(cfgFile string) {
+func generating(cfgFile, connName string) {
 
 	clear(runtime.GOOS)
 	cliInfo()
 
 	var (
-		driverName, host, port, dbFile, user, password, connection, packageName, outputPath, database string
-		chooseTables                                                                                  = make([]string, 0)
+		info = new(dbInfo)
+
+		connection, packageName, outputPath, generatePermissionFlag string
+
+		chooseTables = make([]string, 0)
+
+		cfgModel *ini.File
+		err      error
 	)
 
 	if cfgFile != "" {
-		cfgModel, err := ini.Load(cfgFile)
+		cfgModel, err = ini.Load(cfgFile)
 
 		if err != nil {
-			panic("wrong config file path")
+			panic(errors.New("wrong config file path"))
 		}
 
-		dbCfgModel, exist := cfgModel.GetSection("database")
+		languageCfg, err := cfgModel.GetSection("language")
 
-		if exist == nil {
-			driverName = dbCfgModel.Key("driver").Value()
-			host = dbCfgModel.Key("host").Value()
-			user = dbCfgModel.Key("username").Value()
-			port = dbCfgModel.Key("port").Value()
-			dbFile = dbCfgModel.Key("file").Value()
-			password = dbCfgModel.Key("password").Value()
-			database = dbCfgModel.Key("database").Value()
-			t := dbCfgModel.Key("tables").Value()
-			if t != "" {
-				chooseTables = strings.Split(t, ",")
-			}
+		if err == nil {
+			setDefaultLangSet(languageCfg.Key("language").Value())
 		}
 
 		modelCfgModel, exist2 := cfgModel.GetSection("model")
@@ -73,133 +68,42 @@ func generating(cfgFile string) {
 			connection = modelCfgModel.Key("connection").Value()
 			packageName = modelCfgModel.Key("package").Value()
 			outputPath = modelCfgModel.Key("output").Value()
+			generatePermissionFlag = modelCfgModel.Key("generate_permission_flag").Value()
 		}
 
+		if connection == "" {
+			connection = connName
+		}
+
+		info = getDBInfoFromINIConfig(cfgModel, connection)
 	}
 
-	survey.SelectQuestionTemplate = strings.Replace(survey.SelectQuestionTemplate, "type to filter", "type to filter, enter to select", -1)
-	survey.MultiSelectQuestionTemplate = strings.Replace(survey.MultiSelectQuestionTemplate, "enter to select", "space to select", -1)
-
-	if driverName == "" {
-		var qs = []*survey.Question{
-			{
-				Name: "driver",
-				Prompt: &survey.Select{
-					Message: "choose a driver",
-					Options: []string{"mysql", "postgresql", "sqlite", "mssql"},
-					Default: "mysql",
-				},
-			},
-		}
-
-		var result = make(map[string]interface{})
-
-		err := survey.Ask(qs, &result)
-		checkError(err)
-		driverName = result["driver"].(core.OptionAnswer).Value
-	}
-
-	var (
-		cfg  map[string]config.Database
-		conn = db.GetConnectionByDriver(driverName)
-	)
-
-	if driverName != "sqlite" {
-
-		defaultPort := "3306"
-		defaultUser := "root"
-
-		if driverName == "postgresql" {
-			defaultPort = "5432"
-			defaultUser = "postgres"
-		}
-
-		if driverName == "mssql" {
-			defaultPort = "1433"
-			defaultUser = "sa"
-		}
-
-		if host == "" {
-			host = promptWithDefault("sql address", "127.0.0.1")
-		}
-
-		if port == "" {
-			port = promptWithDefault("sql port", defaultPort)
-		}
-
-		if user == "" {
-			user = promptWithDefault("sql username", defaultUser)
-		}
-
-		if password == "" {
-			password = promptPassword()
-		}
-
-		if database == "" {
-			database = prompt("sql database name")
-		}
-
-		if conn == nil {
-			exitWithError("invalid db connection")
-			panic("invalid db connection")
-		}
-		cfg = map[string]config.Database{
-			"default": {
-				Host:       host,
-				Port:       port,
-				User:       user,
-				Pwd:        password,
-				Name:       database,
-				MaxIdleCon: 50,
-				MaxOpenCon: 150,
-				Driver:     driverName,
-				File:       "",
-			},
-		}
-	} else {
-
-		if dbFile == "" {
-			dbFile = prompt("sql file")
-		}
-
-		if database == "" {
-			database = prompt("sql database name")
-		}
-
-		if conn == nil {
-			exitWithError("invalid db connection")
-			panic("invalid db connection")
-		}
-		cfg = map[string]config.Database{
-			"default": {
-				Driver: driverName,
-				File:   dbFile,
-			},
-		}
-	}
-
-	// step 1. test connection
-	conn.InitDB(cfg)
+	// step 1. get connection
+	conn := askForDBConnection(info)
 
 	// step 2. show tables
 	if len(chooseTables) == 0 {
-		tableModels, _ := db.WithDriver(conn).ShowTables()
+		tables, err := db.WithDriver(conn).Table(info.Database).ShowTables()
 
-		tables := getTablesFromSQLResult(tableModels, driverName, database)
-		if len(tables) == 0 {
-			exitWithError(`no tables, you should build a table of your own business first.
-
-see: http://www.go-admin.cn/en/docs/#/plugins/admin`)
+		if err != nil {
+			panic(err)
 		}
-		tables = append([]string{"[select all]"}, tables...)
 
-		survey.SelectQuestionTemplate = strings.Replace(survey.SelectQuestionTemplate, "<enter> to select", "<space> to select", -1)
+		tables = filterTables(tables)
+
+		if len(tables) == 0 {
+			panic(newError(`no tables, you should build a table of your own business first.`))
+		}
+		tables = append([]string{"[" + getWord("select all") + "]"}, tables...)
+
+		survey.SelectQuestionTemplate = strings.ReplaceAll(survey.SelectQuestionTemplate, "<enter> to select",
+			"<space> to select")
 
 		chooseTables = selects(tables)
 		if len(chooseTables) == 0 {
-			exitWithError("no table is selected")
+			panic(newError("no table is selected"))
 		}
-		if modules.InArray(chooseTables, "[select all]") {
+		if modules.InArray(chooseTables, "["+getWord("select all")+"]") {
 			chooseTables = tables[1:]
 		}
 	}
@@ -216,52 +120,67 @@ see: http://www.go-admin.cn/en/docs/#/plugins/admin`)
 		outputPath = promptWithDefault("set file output path", "./")
 	}
 
-	fmt.Println(ansi.Color("✔", "green") + " generating: ")
-	fmt.Println()
+	if generatePermissionFlag == "" {
+		generatePermissionFlag = singleSelect(getWord("generate permission records for tables"),
+			[]string{getWord("yes"), getWord("no")}, getWord("yes"))
+	}
 
-	fieldField := "Field"
-	typeField := "Type"
-	if driverName == "postgresql" {
-		fieldField = "column_name"
-		typeField = "udt_name"
+	if generatePermissionFlag == getWord("yes") {
+		if connection == "default" {
+			for _, table := range chooseTables {
+				insertPermissionOfTable(conn, table)
+			}
+		} else {
+			var defInfo = new(dbInfo)
+			if cfgFile != "" {
+				defInfo = getDBInfoFromINIConfig(cfgModel, "")
+			}
+			defConn := askForDBConnection(defInfo)
+			for _, table := range chooseTables {
+				insertPermissionOfTable(defConn, table)
+			}
+		}
 	}
-	if driverName == "sqlite" {
-		fieldField = "name"
-		typeField = "type"
-	}
-	if driverName == "mssql" {
-		fieldField = "column_name"
-		typeField = "data_type"
-	}
+
+	fmt.Println()
+	fmt.Println(ansi.Color("✔", "green") + " " + getWord("generating: "))
+	fmt.Println()
 
 	bar := progressbar.New(len(chooseTables))
 	for i := 0; i < len(chooseTables); i++ {
 		_ = bar.Add(1)
 		time.Sleep(10 * time.Millisecond)
-		generateFile(chooseTables[i], conn, fieldField, typeField, packageName, connection, driverName, outputPath)
+		checkError(tools.Generate(tools.NewParam(tools.Config{
+			Connection:     connection,
+			Driver:         info.DriverName,
+			Package:        packageName,
+			HideFilterArea: true,
+			Table:          chooseTables[i],
+			Schema:         info.Schema,
+			Output:         outputPath,
+			Conn:           conn,
+		})))
 	}
-	generateTables(outputPath, chooseTables, packageName)
+
+	if err := tools.GenerateTables(outputPath, packageName, chooseTables, true); err != nil {
+		panic(err)
+	}
 
 	fmt.Println()
 	fmt.Println()
-	fmt.Println(ansi.Color("generate success~~🍺🍺", "green"))
+	fmt.Println(ansi.Color(getWord("Generate data table models success~~🍺🍺"), "green"))
 	fmt.Println()
-	fmt.Println("see the docs: " + ansi.Color("http://doc.go-admin.cn/en/#/introduce/plugins/admin", "blue"))
-	fmt.Println()
-	fmt.Println()
-}
-
-func camelcase(s string) string {
-	arr := strings.Split(s, "_")
-	var res = ""
-	for i := 0; i < len(arr); i++ {
-		if i == 0 {
-			res += arr[i]
-		} else {
-			res += strings.Title(arr[i])
-		}
+	if defaultLang == "cn" {
+		fmt.Println(getWord("see the docs: ") + ansi.Color("http://doc.go-admin.cn",
+			"blue"))
+	} else {
+		fmt.Println(getWord("see the docs: ") + ansi.Color("https://book.go-admin.com",
+			"blue"))
 	}
-	return res
+	fmt.Println(getWord("visit forum: ") + ansi.Color("http://discuss.go-admin.com",
+		"blue"))
+	fmt.Println()
+	fmt.Println()
 }
 
 func clear(osName string) {
@@ -279,34 +198,15 @@ func clear(osName string) {
 	}
 }
 
-func getTablesFromSQLResult(models []map[string]interface{}, driver string, dbName string) []string {
+func filterTables(models []string) []string {
 	tables := make([]string, 0)
-	if len(models) == 0 {
-		return tables
-	}
-
-	key := "Tables_in_" + dbName
-	if driver == "postgresql" || driver == "sqlite" {
-		key = "tablename"
-	} else if driver == "mssql" {
-		key = "TABLE_NAME"
-	} else {
-		if _, ok := models[0][key].(string); !ok {
-			key = "Tables_in_" + strings.ToLower(dbName)
-		}
-	}
 
 	for i := 0; i < len(models); i++ {
-		// skip sqlite system tables
-		if driver == "sqlite" && models[i][key].(string) == "sqlite_sequence" {
-			continue
-		}
-
 		// skip goadmin system tables
-		if isSystemTable(models[i][key].(string)) {
+		if isSystemTable(models[i]) {
 			continue
 		}
-		tables = append(tables, models[i][key].(string))
+		tables = append(tables, models[i])
 	}
 
 	return tables
@@ -327,7 +227,7 @@ func prompt(label string) string {
 	var qs = []*survey.Question{
 		{
 			Name:     label,
-			Prompt:   &survey.Input{Message: label},
+			Prompt:   &survey.Input{Message: getWord(label)},
 			Validate: survey.Required,
 		},
 	}
@@ -346,7 +246,7 @@ func promptWithDefault(label string, defaultValue string) string {
 	var qs = []*survey.Question{
 		{
 			Name:     label,
-			Prompt:   &survey.Input{Message: label, Default: defaultValue},
+			Prompt:   &survey.Input{Message: getWord(label), Default: defaultValue},
 			Validate: survey.Required,
 		},
 	}
@@ -364,7 +264,7 @@ func promptPassword() string {
 
 	password := ""
 	prompt := &survey.Password{
-		Message: "sql password",
+		Message: getWord("sql password"),
 	}
 	err := survey.AskOne(prompt, &password, nil)
 
@@ -377,7 +277,7 @@ func selects(tables []string) []string {
 
 	chooseTables := make([]string, 0)
 	prompt := &survey.MultiSelect{
-		Message:  "choose table to generate",
+		Message:  getWord("choose table to generate"),
 		Options:  tables,
 		PageSize: 10,
 	}
@@ -388,115 +288,21 @@ func selects(tables []string) []string {
 	return chooseTables
 }
 
-func generateFile(table string, conn db.Connection, fieldField, typeField, packageName, connection, driver, outputPath string) {
-
-	columnsModel, _ := db.WithDriver(conn).Table(table).ShowColumns()
-
-	tableCamel := camelcase(table)
-
-	var newTable = `table.NewDefaultTable(table.DefaultConfigWithDriver("` + driver + `"))`
-	if connection != "default" {
-		newTable = `table.NewDefaultTable(table.DefaultConfigWithDriverAndConnection("` + driver + `", "` + connection + `"))`
+func singleSelect(msg string, options []string, def string) string {
+	var qs = []*survey.Question{
+		{
+			Name: "question",
+			Prompt: &survey.Select{
+				Message: msg,
+				Options: options,
+				Default: def,
+			},
+		},
 	}
-
-	content := `package ` + packageName + `
-
-import (
-	"github.com/GoAdminGroup/go-admin/context"
-	"github.com/GoAdminGroup/go-admin/modules/db"
-	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/table"
-	"github.com/GoAdminGroup/go-admin/template/types/form"
-)
-
-func Get` + strings.Title(tableCamel) + `Table(ctx *context.Context) table.Table {
-
-    ` + tableCamel + `Table := ` + newTable + `
-
-	info := ` + tableCamel + `Table.GetInfo()
-	
-	`
-
-	for _, model := range columnsModel {
-		if model[fieldField].(string) == "id" {
-			content += `info.AddField("` + strings.Title(model[fieldField].(string)) +
-				`","` + model[fieldField].(string) +
-				`", db.` + getType(model[typeField].(string)) + `).FieldFilterable()
-	`
-		} else {
-			content += `info.AddField("` + strings.Title(model[fieldField].(string)) +
-				`","` + model[fieldField].(string) +
-				`", db.` + getType(model[typeField].(string)) + `)
-	`
-		}
-	}
-
-	content += `
-	info.SetTable("` + table + `").SetTitle("` + strings.Title(table) + `").SetDescription("` + strings.Title(table) + `")
-
-	formList := ` + tableCamel + `Table.GetForm()
-	
-	`
-
-	for _, model := range columnsModel {
-
-		typeName := getType(model[typeField].(string))
-		formType := form.GetFormTypeFromFieldType(db.DT(strings.ToUpper(typeName)), model[fieldField].(string))
-
-		if model[fieldField].(string) == "id" {
-			content += `formList.AddField("` + strings.Title(model[fieldField].(string)) + `","` +
-				model[fieldField].(string) + `",db.` + typeName + `,` + formType + `).FieldNotAllowAdd()
-	`
-		} else {
-			content += `formList.AddField("` + strings.Title(model[fieldField].(string)) + `","` +
-				model[fieldField].(string) + `",db.` + typeName + `,` + formType + `)
-	`
-		}
-	}
-
-	content += `
-	formList.SetTable("` + table + `").SetTitle("` + strings.Title(table) + `").SetDescription("` + strings.Title(table) + `")
-
-	return ` + tableCamel + `Table
-}`
-
-	err := ioutil.WriteFile(outputPath+"/"+table+".go", []byte(content), 0644)
+	var result = make(map[string]interface{})
+	err := survey.Ask(qs, &result)
 	checkError(err)
-}
 
-func generateTables(outputPath string, tables []string, packageName string) {
+	return result["question"].(core.OptionAnswer).Value
 
-	tableStr := ""
-	commentStr := ""
-
-	for i := 0; i < len(tables); i++ {
-		tableStr += `
-	"` + tables[i] + `": Get` + strings.Title(camelcase(tables[i])) + `Table,`
-		commentStr += `// "` + tables[i] + `" => http://localhost:9033/admin/info/` + tables[i] + `
-`
-	}
-
-	content := `package ` + packageName + `
-
-import "github.com/GoAdminGroup/go-admin/plugins/admin/modules/table"
-
-// The key of Generators is the prefix of table info url.
-// The corresponding value is the Form and Table data.
-//
-// http://{{config.Domain}}:{{Port}}/{{config.Prefix}}/info/{{key}}
-//
-// example:
-//
-` + commentStr + `//
-var Generators = map[string]table.Generator{` + tableStr + `
-}
-`
-	err := ioutil.WriteFile(outputPath+"/tables.go", []byte(content), 0644)
-	checkError(err)
-}
-
-func getType(typeName string) string {
-	r, _ := regexp.Compile(`\(.*?\)`)
-	typeName = r.ReplaceAllString(typeName, "")
-	r2, _ := regexp.Compile(`unsigned(.*)`)
-	return strings.TrimSpace(strings.Title(strings.ToLower(r2.ReplaceAllString(typeName, ""))))
 }

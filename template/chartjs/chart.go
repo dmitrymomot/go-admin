@@ -1,14 +1,14 @@
 package chartjs
 
 import (
-	"bytes"
-	"fmt"
-	"github.com/GoAdminGroup/go-admin/modules/language"
-	"github.com/GoAdminGroup/go-admin/modules/logger"
 	"html/template"
+
+	template2 "github.com/GoAdminGroup/go-admin/template"
 )
 
 type Chart struct {
+	*template2.BaseComponent
+
 	ID     string
 	Title  template.HTML
 	Js     template.JS
@@ -825,55 +825,14 @@ type DataSet struct {
 type Color string
 
 func NewChart() *Chart {
-	return new(Chart)
-}
-
-func (c *Chart) GetTemplate() (*template.Template, string) {
-	tmpl, err := template.New("chartjs").
-		Funcs(template.FuncMap{
-			"lang":     language.Get,
-			"langHtml": language.GetFromHtml,
-			"link": func(cdnUrl, prefixUrl, assetsUrl string) string {
-				if cdnUrl == "" {
-					return prefixUrl + assetsUrl
-				}
-				return cdnUrl + assetsUrl
-			},
-			"isLinkUrl": func(s string) bool {
-				return (len(s) > 7 && s[:7] == "http://") || (len(s) > 8 && s[:8] == "https://")
-			},
-		}).
-		Parse(List["chartjs"])
-
-	if err != nil {
-		logger.Error("Chart GetTemplate Error: ", err)
+	return &Chart{
+		BaseComponent: &template2.BaseComponent{
+			Name:     "chartjs",
+			HTMLData: List["chartjs"],
+		},
 	}
-
-	return tmpl, "chartjs"
 }
 
-func (c *Chart) GetAssetList() []string {
-	return AssetsList
-}
-
-func (c *Chart) GetAsset(name string) ([]byte, error) {
-	return Asset(name[1:])
-}
-
-func (c *Chart) IsAPage() bool {
-	return false
-}
-
-func (c *Chart) GetName() string {
-	return "chartjs"
-}
-
-func (c *Chart) GetContent() template.HTML {
-	buffer := new(bytes.Buffer)
-	tmpl, defineName := c.GetTemplate()
-	err := tmpl.ExecuteTemplate(buffer, defineName, c)
-	if err != nil {
-		fmt.Println("ComposeHtml Error:", err)
-	}
-	return template.HTML(buffer.String())
-}
+func (c *Chart) GetAssetList() []string               { return AssetsList }
+func (c *Chart) GetAsset(name string) ([]byte, error) { return Asset(name[1:]) }
+func (c *Chart) GetContent() template.HTML            { return c.GetContentWithData(c) }

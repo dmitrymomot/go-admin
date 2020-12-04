@@ -5,13 +5,17 @@
 package auth
 
 import (
+	"sync"
+
+	"github.com/GoAdminGroup/go-admin/modules/db/dialect"
+	"github.com/GoAdminGroup/go-admin/modules/logger"
+
 	"github.com/GoAdminGroup/go-admin/context"
 	"github.com/GoAdminGroup/go-admin/modules/db"
 	"github.com/GoAdminGroup/go-admin/modules/service"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/models"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/modules"
 	"golang.org/x/crypto/bcrypt"
-	"sync"
 )
 
 // Auth get the user model from Context.
@@ -49,36 +53,56 @@ func EncodePassword(pwd []byte) string {
 	if err != nil {
 		return ""
 	}
-	return string(hash[:])
+	return string(hash)
 }
 
 // SetCookie set the cookie.
-func SetCookie(ctx *context.Context, user models.UserModel, conn db.Connection) bool {
-	InitSession(ctx, conn).Add("user_id", user.Id)
-	return true
+func SetCookie(ctx *context.Context, user models.UserModel, conn db.Connection) error {
+	ses, err := InitSession(ctx, conn)
+
+	if err != nil {
+		return err
+	}
+
+	return ses.Add("user_id", user.Id)
 }
 
 // DelCookie delete the cookie from Context.
-func DelCookie(ctx *context.Context, conn db.Connection) bool {
-	InitSession(ctx, conn).Clear()
-	return true
+func DelCookie(ctx *context.Context, conn db.Connection) error {
+	ses, err := InitSession(ctx, conn)
+
+	if err != nil {
+		return err
+	}
+
+	return ses.Clear()
 }
 
 type TokenService struct {
 	tokens CSRFToken
 	lock   sync.Mutex
+	conn   db.Connection
 }
 
 func (s *TokenService) Name() string {
-	return "token_csrf_helper"
+	return TokenServiceKey
 }
 
-func init() {
-	service.Register("token_csrf_helper", func() (service.Service, error) {
-		return &TokenService{
-			tokens: make(CSRFToken, 0),
-		}, nil
-	})
+func InitCSRFTokenSrv(conn db.Connection) (string, service.Service) {
+	list, err := db.WithDriver(conn).Table("goadmin_session").
+		Where("values", "=", "__csrf_token__").
+		All()
+	if db.CheckError(err, db.QUERY) {
+		logger.Error("csrf token query from database error: ", err)
+	}
+	tokens := make(CSRFToken, len(list))
+	for i := 0; i < len(list); i++ {
+		tokens[i] = list[i]["sid"].(string)
+	}
+	return TokenServiceKey, &TokenService{
+		tokens: tokens,
+		conn:   conn,
+	}
 }
 
 const (
@@ -99,6 +123,13 @@ func (s *TokenService) AddToken() string {
 	defer s.lock.Unlock()
 	tokenStr := modules.Uuid()
 	s.tokens = append(s.tokens, tokenStr)
+	_, err := db.WithDriver(s.conn).Table("goadmin_session").Insert(dialect.H{
+		"sid":    tokenStr,
+		"values": "__csrf_token__",
+	})
+	if db.CheckError(err, db.INSERT) {
+		logger.Error("csrf token insert into database error: ", err)
+	}
 	return tokenStr
 }
 
@@ -108,6 +139,13 @@ func (s *TokenService) CheckToken(toCheckToken string) bool {
 	for i := 0; i < len(s.tokens); i++ {
 		if (s.tokens)[i] == toCheckToken {
 			s.tokens = append((s.tokens)[:i], (s.tokens)[i+1:]...)
+			err := db.WithDriver(s.conn).Table("goadmin_session").
+				Where("sid", "=", toCheckToken).
+				Where("values", "=", "__csrf_token__").
+				Delete()
+			if db.CheckError(err, db.DELETE) {
+				logger.Error("csrf token delete from database error: ", err)
+			}
 			return true
 		}
 	}
@@ -117,7 +155,7 @@ func (s *TokenService) CheckToken(toCheckToken string) bool {
 // CSRFToken is type of a csrf token list.
 type CSRFToken []string
 
-type Processor func(ctx *context.Context) (model models.UserModel, exist bool)
+type Processor func(ctx *context.Context) (model models.UserModel, exist bool, msg string)
 
 type Service struct {
 	P Processor

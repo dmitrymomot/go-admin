@@ -6,10 +6,10 @@ package db
 
 import (
 	"database/sql"
-	"fmt"
-	"github.com/GoAdminGroup/go-admin/modules/config"
 	"strconv"
 	"strings"
+
+	"github.com/GoAdminGroup/go-admin/modules/config"
 )
 
 // Postgresql is a Connection of postgresql.
@@ -56,32 +56,46 @@ func (db *Postgresql) Exec(query string, args ...interface{}) (sql.Result, error
 	return CommonExec(db.DbList["default"], filterQuery(query), args...)
 }
 
+func (db *Postgresql) QueryWith(tx *sql.Tx, conn, query string, args ...interface{}) ([]map[string]interface{}, error) {
+	if tx != nil {
+		return db.QueryWithTx(tx, query, args...)
+	}
+	return db.QueryWithConnection(conn, query, args...)
+}
+
+func (db *Postgresql) ExecWith(tx *sql.Tx, conn, query string, args ...interface{}) (sql.Result, error) {
+	if tx != nil {
+		return db.ExecWithTx(tx, query, args...)
+	}
+	return db.ExecWithConnection(conn, query, args...)
+}
+
 func filterQuery(query string) string {
 	queCount := strings.Count(query, "?")
 	for i := 1; i < queCount+1; i++ {
 		query = strings.Replace(query, "?", "$"+strconv.Itoa(i), 1)
 	}
-	query = strings.Replace(query, "`", "", -1)
+	query = strings.ReplaceAll(query, "`", "")
 	// TODO: add " to the keyword
-	return strings.Replace(query, "by order ", `by "order" `, -1)
+	return strings.ReplaceAll(query, "by order ", `by "order" `)
 }
 
 // InitDB implements the method Connection.InitDB.
 func (db *Postgresql) InitDB(cfgList map[string]config.Database) Connection {
+	db.Configs = cfgList
 	db.Once.Do(func() {
 		for conn, cfg := range cfgList {
 
-			if cfg.Dsn == "" {
-				cfg.Dsn = fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
-					cfg.Host, cfg.Port, cfg.User, cfg.Pwd, cfg.Name)
-			}
-
-			sqlDB, err := sql.Open("postgres", cfg.Dsn)
+			sqlDB, err := sql.Open("postgres", cfg.GetDSN())
 			if err != nil {
 				panic(err)
 			}
 
 			db.DbList[conn] = sqlDB
+
+			if err := sqlDB.Ping(); err != nil {
+				panic(err)
+			}
 		}
 	})
 	return db

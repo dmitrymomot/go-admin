@@ -1,8 +1,9 @@
 package icon
 
 import (
-	"github.com/GoAdminGroup/html"
 	"html/template"
+
+	"github.com/GoAdminGroup/html"
 )
 
 func Icon(class string, num ...int) template.HTML {
@@ -13,6 +14,22 @@ func Icon(class string, num ...int) template.HTML {
 		}
 	}
 	return html.IEl().SetClass("icon fa", class).Get() + space
+}
+
+func IconWithStyle(class string, style html.Style, num ...int) template.HTML {
+	space := template.HTML("")
+	if len(num) > 0 {
+		for i := 0; i < num[0]; i++ {
+			space += "&nbsp;"
+		}
+	}
+
+	i := html.IEl().SetClass("icon fa", class)
+	for k, s := range style {
+		i.SetStyle(k, s)
+	}
+
+	return i.Get() + space
 }
 
 const (
@@ -745,4 +762,7 @@ const (
 	Youtube                          = "fa-youtube"                             // https://fontawesome.com/icons/youtube
 	YoutubePlay                      = "fa-youtube-play"                        // https://fontawesome.com/icons/youtube-play
 	YoutubeSquare                    = "fa-youtube-square"                      // https://fontawesome.com/icons/youtube-square
+	IonIosGearOutline                = "ion-ios-gear-outline"                   // https://fontawesome.com/icons/ion-ios-gear-outline
+	IonIosCartOutline                = "ion-ios-cart-outline"                   // https://fontawesome.com/icons/ion-ios-cart-outline
+	IonIosPeopleOutline              = "ion-ios-people-outline"                 // https://fontawesome.com/icons/ion-ios-people-outline
 )

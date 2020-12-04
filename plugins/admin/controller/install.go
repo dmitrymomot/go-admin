@@ -3,13 +3,14 @@ package controller
 import (
 	"bytes"
 	"database/sql"
+	"net/http"
+
 	"github.com/GoAdminGroup/go-admin/context"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/response"
-	"net/http"
 )
 
 // ShowInstall show install page.
-func ShowInstall(ctx *context.Context) {
+func (h *Handler) ShowInstall(ctx *context.Context) {
 
 	buffer := new(bytes.Buffer)
 	//template.GetInstallPage(buffer)
@@ -24,7 +25,7 @@ func ShowInstall(ctx *context.Context) {
 }
 
 // CheckDatabase check the database connection.
-func CheckDatabase(ctx *context.Context) {
+func (h *Handler) CheckDatabase(ctx *context.Context) {
 
 	ip := ctx.FormValue("h")
 	port := ctx.FormValue("po")
@@ -41,7 +42,7 @@ func CheckDatabase(ctx *context.Context) {
 	}
 
 	defer func() {
-		SqlDB.Close()
+		_ = SqlDB.Close()
 	}()
 
 	if err != nil {

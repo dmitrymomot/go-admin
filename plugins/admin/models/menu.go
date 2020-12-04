@@ -1,10 +1,12 @@
 package models
 
 import (
-	"github.com/GoAdminGroup/go-admin/modules/db"
-	"github.com/GoAdminGroup/go-admin/modules/db/dialect"
+	"encoding/json"
 	"strconv"
 	"time"
+
+	"github.com/GoAdminGroup/go-admin/modules/db"
+	"github.com/GoAdminGroup/go-admin/modules/db/dialect"
 )
 
 // MenuModel is menu model structure.
@@ -44,15 +46,16 @@ func (t MenuModel) Find(id interface{}) MenuModel {
 }
 
 // New create a new menu model.
-func (t MenuModel) New(title, icon, uri, header string, parentId, order int64) MenuModel {
+func (t MenuModel) New(title, icon, uri, header, pluginName string, parentId, order int64) (MenuModel, error) {
 
-	id, _ := t.Table(t.TableName).Insert(dialect.H{
-		"title":     title,
-		"parent_id": parentId,
-		"icon":      icon,
-		"uri":       uri,
-		"order":     order,
-		"header":    header,
+	id, err := t.Table(t.TableName).Insert(dialect.H{
+		"title":       title,
+		"parent_id":   parentId,
+		"icon":        icon,
+		"uri":         uri,
+		"order":       order,
+		"header":      header,
+		"plugin_name": pluginName,
 	})
 
 	t.Id = id
@@ -62,7 +65,7 @@ func (t MenuModel) New(title, icon, uri, header string, parentId, order int64) M
 	t.Uri = uri
 	t.Header = header
 
-	return t
+	return t, err
 }
 
 // Delete delete the menu model.
@@ -83,53 +86,79 @@ func (t MenuModel) Delete() {
 }
 
 // Update update the menu model.
-func (t MenuModel) Update(title, icon, uri, header string, parentId int64) MenuModel {
-
-	_, _ = t.Table(t.TableName).
+func (t MenuModel) Update(title, icon, uri, header, pluginName string, parentId int64) (int64, error) {
+	return t.Table(t.TableName).
 		Where("id", "=", t.Id).
 		Update(dialect.H{
-			"title":      title,
-			"parent_id":  parentId,
-			"icon":       icon,
-			"uri":        uri,
-			"header":     header,
-			"updated_at": time.Now().Format("2006-01-02 15:04:05"),
+			"title":       title,
+			"parent_id":   parentId,
+			"icon":        icon,
+			"plugin_name": pluginName,
+			"uri":         uri,
+			"header":      header,
+			"updated_at":  time.Now().Format("2006-01-02 15:04:05"),
 		})
+}
 
-	t.Title = title
-	t.ParentId = parentId
-	t.Icon = icon
-	t.Uri = uri
-	t.Header = header
+type OrderItems []OrderItem
 
-	return t
+type OrderItem struct {
+	ID       uint       `json:"id"`
+	Children OrderItems `json:"children"`
 }
 
 // ResetOrder update the order of menu models.
-func (t MenuModel) ResetOrder(data []map[string]interface{}) {
-	count := 1
-	for _, v := range data {
-		if child, ok := v["children"]; ok {
-			_, _ = t.Table(t.TableName).
-				Where("id", "=", v["id"]).Update(dialect.H{
-				"order":     count,
-				"parent_id": 0,
-			})
+func (t MenuModel) ResetOrder(data []byte) {
 
-			for _, v2 := range child.([]interface{}) {
-				_, _ = t.Table(t.TableName).
-					Where("id", "=", v2.(map[string]interface{})["id"]).Update(dialect.H{
+	var items OrderItems
+	_ = json.Unmarshal(data, &items)
+
+	count := 1
+	for _, v := range items {
+		if len(v.Children) > 0 {
+			_, _ = t.Table(t.TableName).
+				Where("id", "=", v.ID).
+				Update(dialect.H{
 					"order":     count,
-					"parent_id": v["id"],
+					"parent_id": 0,
 				})
-				count++
+
+			for _, v2 := range v.Children {
+				if len(v2.Children) > 0 {
+
+					_, _ = t.Table(t.TableName).
+						Where("id", "=", v2.ID).
+						Update(dialect.H{
+							"order":     count,
+							"parent_id": v.ID,
+						})
+
+					for _, v3 := range v2.Children {
+						_, _ = t.Table(t.TableName).
+							Where("id", "=", v3.ID).
+							Update(dialect.H{
+								"order":     count,
+								"parent_id": v2.ID,
+							})
+						count++
+					}
+				} else {
+					_, _ = t.Table(t.TableName).
+						Where("id", "=", v2.ID).
+						Update(dialect.H{
+							"order":     count,
+							"parent_id": v.ID,
+						})
+					count++
+				}
 			}
 		} else {
 			_, _ = t.Table(t.TableName).
-				Where("id", "=", v["id"]).Update(dialect.H{
-				"order":     count,
-				"parent_id": 0,
-			})
+				Where("id", "=", v.ID).
+				Update(dialect.H{
+					"order":     count,
+					"parent_id": 0,
+				})
 			count++
 		}
 	}
@@ -145,21 +174,22 @@ func (t MenuModel) CheckRole(roleId string) bool {
 }
 
 // AddRole add a role to the menu.
-func (t MenuModel) AddRole(roleId string) {
+func (t MenuModel) AddRole(roleId string) (int64, error) {
 	if roleId != "" {
 		if !t.CheckRole(roleId) {
-			_, _ = t.Table("goadmin_role_menu").
+			return t.Table("goadmin_role_menu").
 				Insert(dialect.H{
 					"role_id": roleId,
 					"menu_id": t.Id,
 				})
 		}
 	}
+	return 0, nil
 }
 
 // DeleteRoles delete roles with menu.
-func (t MenuModel) DeleteRoles() {
-	_ = t.Table("goadmin_role_menu").
+func (t MenuModel) DeleteRoles() error {
+	return t.Table("goadmin_role_menu").
 		Where("menu_id", "=", t.Id).
 		Delete()
 }

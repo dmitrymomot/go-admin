@@ -2,10 +2,11 @@ package common
 
 import (
 	"fmt"
+	"net/http"
+
 	"github.com/GoAdminGroup/go-admin/modules/config"
 	"github.com/GoAdminGroup/go-admin/modules/language"
 	"github.com/gavv/httpexpect"
-	"net/http"
 )
 
 func operationLogTest(e *httpexpect.Expect, sesID *http.Cookie) {
@@ -17,7 +18,7 @@ func operationLogTest(e *httpexpect.Expect, sesID *http.Cookie) {
 	// show
 
 	printlnWithColor("show", "green")
-	e.GET(config.Get().Url("/info/op")).
+	e.GET(config.Url("/info/op")).
 		WithCookie(sesID.Name, sesID.Value).
 		Expect().
 		Status(200).

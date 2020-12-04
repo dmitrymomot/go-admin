@@ -1,11 +1,11 @@
 package guard
 
 import (
+	"net/http"
+
 	"github.com/GoAdminGroup/go-admin/context"
-	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/constant"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/form"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/table"
-	"net/http"
 )
 
 type UpdateParam struct {
@@ -14,9 +14,8 @@ type UpdateParam struct {
 	Value  form.Values
 }
 
-func Update(ctx *context.Context) {
-	prefix := ctx.Query(constant.PrefixKey)
-	panel := table.Get(prefix, ctx)
+func (g *Guard) Update(ctx *context.Context) {
+	panel, prefix := g.table(ctx)
 
 	pname := panel.GetPrimaryKey().Name
 
@@ -31,11 +30,11 @@ func Update(ctx *context.Context) {
 	}
 
 	var f = make(form.Values)
-	f.Add("__go_admin_single_update", "1")
+	f.Add(form.PostIsSingleUpdateKey, "1")
 	f.Add(pname, id)
 	f.Add(ctx.FormValue("name"), ctx.FormValue("value"))
 
-	ctx.SetUserValue("update_param", &UpdateParam{
+	ctx.SetUserValue(updateParamKey, &UpdateParam{
 		Panel:  panel,
 		Prefix: prefix,
 		Value:  f,
@@ -44,5 +43,5 @@ func Update(ctx *context.Context) {
 }
 
 func GetUpdateParam(ctx *context.Context) *UpdateParam {
-	return ctx.UserValue["update_param"].(*UpdateParam)
+	return ctx.UserValue[updateParamKey].(*UpdateParam)
 }

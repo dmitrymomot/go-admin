@@ -2,8 +2,6 @@ package constant
 
 import (
 	"github.com/GoAdminGroup/go-admin/modules/constant"
-	"github.com/GoAdminGroup/go-admin/modules/language"
-	"github.com/GoAdminGroup/go-admin/template/icon"
 )
 
 const (
@@ -16,8 +14,9 @@ const (
 	EditPKKey   = "__goadmin_edit_pk"
 	DetailPKKey = "__goadmin_detail_pk"
 	PrefixKey   = "__prefix"
-)
 
-var (
-	DefaultErrorMsg = icon.Icon(icon.Warning, 2) + language.GetFromHtml("error") + `!`
+	IframeKey   = "__goadmin_iframe"
+	IframeIDKey = "__goadmin_iframe_id"
+
+	ContextNodeNeedAuth = constant.ContextNodeNeedAuth
 )

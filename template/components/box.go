@@ -2,8 +2,9 @@ package components
 
 import (
 	"fmt"
-	"github.com/GoAdminGroup/go-admin/template/types"
 	"html/template"
+
+	"github.com/GoAdminGroup/go-admin/template/types"
 )
 
 type BoxAttribute struct {
@@ -14,6 +15,7 @@ type BoxAttribute struct {
 	Title             template.HTML
 	Theme             string
 	HeadBorder        string
+	Attr              template.HTMLAttr
 	HeadColor         string
 	SecondHeaderClass string
 	SecondHeader      template.HTML
@@ -41,6 +43,18 @@ func (compo *BoxAttribute) SetBody(value template.HTML) types.BoxAttribute {
 
 func (compo *BoxAttribute) SetStyle(value template.HTMLAttr) types.BoxAttribute {
 	compo.Style = value
+	return compo
+}
+
+func (compo *BoxAttribute) SetAttr(attr template.HTMLAttr) types.BoxAttribute {
+	compo.Attr = attr
+	return compo
+}
+
+func (compo *BoxAttribute) SetIframeStyle(iframe bool) types.BoxAttribute {
+	if iframe {
+		compo.Attr = `style="border-radius: 0px;box-shadow:none;border-top:none;margin-bottom: 0px;"`
+	}
 	return compo
 }
 
@@ -97,5 +111,5 @@ func (compo *BoxAttribute) GetContent() template.HTML {
 		compo.Style = template.HTMLAttr(fmt.Sprintf(`style="%s"`, string(compo.Style)+compo.Padding))
 	}
 
-	return ComposeHtml(compo.TemplateList, *compo, "box")
+	return ComposeHtml(compo.TemplateList, compo.Separation, *compo, "box")
 }

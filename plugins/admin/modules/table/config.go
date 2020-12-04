@@ -5,15 +5,20 @@ import (
 )
 
 type Config struct {
-	Driver     string
-	Connection string
-	CanAdd     bool
-	Editable   bool
-	Deletable  bool
-	Exportable bool
-	PrimaryKey PrimaryKey
-	SourceURL  string
-	GetDataFun GetDataFun
+	Driver         string
+	DriverMode     string
+	Connection     string
+	CanAdd         bool
+	Editable       bool
+	Deletable      bool
+	Exportable     bool
+	PrimaryKey     PrimaryKey
+	SourceURL      string
+	GetDataFun     GetDataFun
+	OnlyInfo       bool
+	OnlyNewForm    bool
+	OnlyUpdateForm bool
+	OnlyDetail     bool
 }
 
 func DefaultConfig() Config {
@@ -22,13 +27,24 @@ func DefaultConfig() Config {
 		CanAdd:     true,
 		Editable:   true,
 		Deletable:  true,
-		Exportable: false,
+		Exportable: true,
 		Connection: DefaultConnectionName,
 		PrimaryKey: PrimaryKey{
 			Type: db.Int,
 			Name: DefaultPrimaryKeyName,
 		},
 	}
+}
+
+func (config Config) SetPrimaryKey(name string, typ db.DatabaseType) Config {
+	config.PrimaryKey.Name = name
+	config.PrimaryKey.Type = typ
+	return config
+}
+
+func (config Config) SetDriverMode(mode string) Config {
+	config.DriverMode = mode
+	return config
 }
 
 func (config Config) SetPrimaryKeyType(typ string) Config {
@@ -61,6 +77,26 @@ func (config Config) SetDeletable(deletable bool) Config {
 	return config
 }
 
+func (config Config) SetOnlyInfo() Config {
+	config.OnlyInfo = true
+	return config
+}
+
+func (config Config) SetOnlyUpdateForm() Config {
+	config.OnlyUpdateForm = true
+	return config
+}
+
+func (config Config) SetOnlyNewForm() Config {
+	config.OnlyNewForm = true
+	return config
+}
+
+func (config Config) SetOnlyDetail() Config {
+	config.OnlyDetail = true
+	return config
+}
+
 func (config Config) SetExportable(exportable bool) Config {
 	config.Exportable = exportable
 	return config
@@ -78,7 +114,7 @@ func DefaultConfigWithDriver(driver string) Config {
 		CanAdd:     true,
 		Editable:   true,
 		Deletable:  true,
-		Exportable: false,
+		Exportable: true,
 		PrimaryKey: PrimaryKey{
 			Type: db.Int,
 			Name: DefaultPrimaryKeyName,
@@ -93,7 +129,7 @@ func DefaultConfigWithDriverAndConnection(driver, conn string) Config {
 		CanAdd:     true,
 		Editable:   true,
 		Deletable:  true,
-		Exportable: false,
+		Exportable: true,
 		PrimaryKey: PrimaryKey{
 			Type: db.Int,
 			Name: DefaultPrimaryKeyName,

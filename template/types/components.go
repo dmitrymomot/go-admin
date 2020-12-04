@@ -5,27 +5,33 @@
 package types
 
 import (
-	"github.com/GoAdminGroup/go-admin/modules/menu"
-	"github.com/GoAdminGroup/go-admin/template/types/form"
 	"html/template"
+
+	"github.com/GoAdminGroup/go-admin/modules/menu"
+	"github.com/GoAdminGroup/go-admin/plugins/admin/modules"
+	"github.com/GoAdminGroup/go-admin/template/types/form"
 )
 
 type FormAttribute interface {
 	SetHeader(value template.HTML) FormAttribute
-	SetContent(value []FormField) FormAttribute
-	SetTabContents(value [][]FormField) FormAttribute
+	SetContent(value FormFields) FormAttribute
+	SetTabContents(value []FormFields) FormAttribute
 	SetTabHeaders(value []string) FormAttribute
 	SetFooter(value template.HTML) FormAttribute
 	SetPrefix(value string) FormAttribute
 	SetUrl(value string) FormAttribute
 	SetPrimaryKey(value string) FormAttribute
-	SetInfoUrl(value string) FormAttribute
+	SetId(id string) FormAttribute
+	SetAjax(successJS, errorJS template.JS) FormAttribute
+	SetHiddenFields(fields map[string]string) FormAttribute
+	SetFieldsHTML(html template.HTML) FormAttribute
 	SetMethod(value string) FormAttribute
+	SetHeadWidth(width int) FormAttribute
+	SetInputWidth(width int) FormAttribute
 	SetTitle(value template.HTML) FormAttribute
 	SetLayout(layout form.Layout) FormAttribute
-	SetToken(value string) FormAttribute
 	SetOperationFooter(value template.HTML) FormAttribute
-	GetBoxHeader() template.HTML
+	GetDefaultBoxHeader(hideBack bool) template.HTML
 	GetDetailBoxHeader(editUrl, deleteUrl string) template.HTML
 	GetBoxHeaderNoButton() template.HTML
 	GetContent() template.HTML
@@ -38,6 +44,8 @@ type BoxAttribute interface {
 	SetFooter(value template.HTML) BoxAttribute
 	SetTitle(value template.HTML) BoxAttribute
 	WithHeadBorder() BoxAttribute
+	SetIframeStyle(iframe bool) BoxAttribute
+	SetAttr(attr template.HTMLAttr) BoxAttribute
 	SetStyle(value template.HTMLAttr) BoxAttribute
 	SetHeadColor(value string) BoxAttribute
 	SetTheme(value string) BoxAttribute
@@ -84,6 +92,8 @@ type ButtonAttribute interface {
 	SetMarginRight(int) ButtonAttribute
 	SetThemePrimary() ButtonAttribute
 	SetSmallSize() ButtonAttribute
+	AddClass(class string) ButtonAttribute
+	SetID(id string) ButtonAttribute
 	SetMiddleSize() ButtonAttribute
 	SetHref(string) ButtonAttribute
 	SetThemeWarning() ButtonAttribute
@@ -95,32 +105,40 @@ type ButtonAttribute interface {
 }
 
 type TableAttribute interface {
-	SetThead(value []map[string]string) TableAttribute
-	SetInfoList(value []map[string]template.HTML) TableAttribute
+	SetThead(value Thead) TableAttribute
+	SetInfoList(value []map[string]InfoItem) TableAttribute
 	SetType(value string) TableAttribute
-	SetMinWidth(value int) TableAttribute
+	SetName(name string) TableAttribute
+	SetMinWidth(value string) TableAttribute
+	SetHideThead() TableAttribute
 	SetLayout(value string) TableAttribute
+	SetStyle(style string) TableAttribute
 	GetContent() template.HTML
 }
 
 type DataTableAttribute interface {
 	GetDataTableHeader() template.HTML
-	SetThead(value []map[string]string) DataTableAttribute
-	SetInfoList(value []map[string]template.HTML) DataTableAttribute
+	SetThead(value Thead) DataTableAttribute
+	SetInfoList(value []map[string]InfoItem) DataTableAttribute
 	SetEditUrl(value string) DataTableAttribute
 	SetDeleteUrl(value string) DataTableAttribute
 	SetNewUrl(value string) DataTableAttribute
 	SetPrimaryKey(value string) DataTableAttribute
+	SetStyle(style string) DataTableAttribute
 	SetAction(action template.HTML) DataTableAttribute
 	SetIsTab(value bool) DataTableAttribute
+	SetActionFold(fold bool) DataTableAttribute
+	SetHideThead() DataTableAttribute
 	SetLayout(value string) DataTableAttribute
 	SetButtons(btns template.HTML) DataTableAttribute
 	SetHideFilterArea(value bool) DataTableAttribute
 	SetHideRowSelector(value bool) DataTableAttribute
 	SetActionJs(aj template.JS) DataTableAttribute
+	SetNoAction() DataTableAttribute
 	SetInfoUrl(value string) DataTableAttribute
 	SetDetailUrl(value string) DataTableAttribute
 	SetHasFilter(hasFilter bool) DataTableAttribute
+	SetSortUrl(value string) DataTableAttribute
 	SetExportUrl(value string) DataTableAttribute
 	SetUpdateUrl(value string) DataTableAttribute
 	GetContent() template.HTML
@@ -136,6 +154,13 @@ type TreeAttribute interface {
 	GetTreeHeader() template.HTML
 }
 
+type TreeViewAttribute interface {
+	SetTree(value TreeViewData) TreeViewAttribute
+	SetUrlPrefix(value string) TreeViewAttribute
+	SetID(id string) TreeViewAttribute
+	GetContent() template.HTML
+}
+
 type PaginatorAttribute interface {
 	SetCurPageStartIndex(value string) PaginatorAttribute
 	SetCurPageEndIndex(value string) PaginatorAttribute
@@ -149,6 +174,7 @@ type PaginatorAttribute interface {
 	SetOption(value map[string]template.HTML) PaginatorAttribute
 	SetUrl(value string) PaginatorAttribute
 	SetExtraInfo(value template.HTML) PaginatorAttribute
+	SetEntriesInfo(value template.HTML) PaginatorAttribute
 	GetContent() template.HTML
 }
 
@@ -161,12 +187,16 @@ type AlertAttribute interface {
 	SetTheme(value string) AlertAttribute
 	SetTitle(value template.HTML) AlertAttribute
 	SetContent(value template.HTML) AlertAttribute
+	Warning(msg string) template.HTML
 	GetContent() template.HTML
 }
 
 type LinkAttribute interface {
 	OpenInNewTab() LinkAttribute
 	SetURL(value string) LinkAttribute
+	SetAttributes(attr template.HTMLAttr) LinkAttribute
+	SetClass(class template.HTML) LinkAttribute
+	NoPjax() LinkAttribute
 	SetTabTitle(value template.HTML) LinkAttribute
 	SetContent(value template.HTML) LinkAttribute
 	GetContent() template.HTML
@@ -175,8 +205,99 @@ type LinkAttribute interface {
 type PopupAttribute interface {
 	SetID(value string) PopupAttribute
 	SetTitle(value template.HTML) PopupAttribute
+	SetDraggable() PopupAttribute
+	SetHideFooter() PopupAttribute
+	SetWidth(width string) PopupAttribute
+	SetHeight(height string) PopupAttribute
 	SetFooter(value template.HTML) PopupAttribute
+	SetFooterHTML(value template.HTML) PopupAttribute
 	SetBody(value template.HTML) PopupAttribute
 	SetSize(value string) PopupAttribute
 	GetContent() template.HTML
+}
+
+type PanelInfo struct {
+	Thead    Thead    `json:"thead"`
+	InfoList InfoList `json:"info_list"`
+}
+
+type Thead []TheadItem
+
+type TheadItem struct {
+	Head       string       `json:"head"`
+	Sortable   bool         `json:"sortable"`
+	Field      string       `json:"field"`
+	Hide       bool         `json:"hide"`
+	Editable   bool         `json:"editable"`
+	EditType   string       `json:"edit_type"`
+	EditOption FieldOptions `json:"edit_option"`
+	Width      string       `json:"width"`
+}
+
+func (t Thead) GroupBy(group [][]string) []Thead {
+	var res = make([]Thead, len(group))
+
+	for key, value := range group {
+		var newThead = make(Thead, 0)
+
+		for _, info := range t {
+			if modules.InArray(value, info.Field) {
+				newThead = append(newThead, info)
+			}
+		}
+
+		res[key] = newThead
+	}
+
+	return res
+}
+
+type TreeViewData struct {
+	Data              TreeViewItems `json:"data,omitempty"`
+	Levels            int           `json:"levels,omitempty"`
+	BackColor         string        `json:"backColor,omitempty"`
+	BorderColor       string        `json:"borderColor,omitempty"`
+	CheckedIcon       string        `json:"checkedIcon,omitempty"`
+	CollapseIcon      string        `json:"collapseIcon,omitempty"`
+	Color             string        `json:"color,omitempty"`
+	EmptyIcon         string        `json:"emptyIcon,omitempty"`
+	EnableLinks       bool          `json:"enableLinks,omitempty"`
+	ExpandIcon        string        `json:"expandIcon,omitempty"`
+	MultiSelect       bool          `json:"multiSelect,omitempty"`
+	NodeIcon          string        `json:"nodeIcon,omitempty"`
+	OnhoverColor      string        `json:"onhoverColor,omitempty"`
+	SelectedIcon      string        `json:"selectedIcon,omitempty"`
+	SearchResultColor string        `json:"searchResultColor,omitempty"`
+	SelectedBackColor string        `json:"selectedBackColor,omitempty"`
+	SelectedColor     string        `json:"selectedColor,omitempty"`
+	ShowBorder        bool          `json:"showBorder,omitempty"`
+	ShowCheckbox      bool          `json:"showCheckbox,omitempty"`
+	ShowIcon          bool          `json:"showIcon,omitempty"`
+	ShowTags          bool          `json:"showTags,omitempty"`
+	UncheckedIcon     string        `json:"uncheckedIcon,omitempty"`
+
+	SearchResultBackColor  string `json:"searchResultBackColor,omitempty"`
+	HighlightSearchResults bool   `json:"highlightSearchResults,omitempty"`
+}
+
+type TreeViewItems []TreeViewItem
+
+type TreeViewItemState struct {
+	Checked  bool `json:"checked,omitempty"`
+	Disabled bool `json:"disabled,omitempty"`
+	Expanded bool `json:"expanded,omitempty"`
+	Selected bool `json:"selected,omitempty"`
+}
+
+type TreeViewItem struct {
+	Text         string            `json:"text,omitempty"`
+	Icon         string            `json:"icon,omitempty"`
+	SelectedIcon string            `json:"selected_icon,omitempty"`
+	Color        string            `json:"color,omitempty"`
+	BackColor    string            `json:"backColor,omitempty"`
+	Href         string            `json:"href,omitempty"`
+	Selectable   bool              `json:"selectable,omitempty"`
+	State        TreeViewItemState `json:"state,omitempty"`
+	Tags         []string          `json:"tags,omitempty"`
+	Nodes        TreeViewItems     `json:"nodes,omitempty"`
 }

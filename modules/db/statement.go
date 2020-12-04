@@ -116,7 +116,7 @@ func (sql *SQL) Table(table string) *SQL {
 func (sql *SQL) Select(fields ...string) *SQL {
 	sql.Fields = fields
 	sql.Functions = make([]string, len(fields))
-	reg, _ := regexp.Compile("(.*?)\\((.*?)\\)")
+	reg, _ := regexp.Compile(`(.*?)\((.*?)\)`)
 	for k, field := range fields {
 		res := reg.FindAllStringSubmatch(field, -1)
 		if len(res) > 0 && len(res[0]) > 2 {
@@ -142,16 +142,32 @@ func (sql *SQL) OrderBy(fields ...string) *SQL {
 	return sql
 }
 
+// OrderByRaw set order by.
+func (sql *SQL) OrderByRaw(order string) *SQL {
+	if order != "" {
+		sql.Order += " " + order
+	}
+	return sql
+}
+
 func (sql *SQL) GroupBy(fields ...string) *SQL {
 	if len(fields) == 0 {
 		panic("wrong group by field")
 	}
 	for i := 0; i < len(fields); i++ {
-		if i == len(fields)-2 {
-			sql.Group += " " + sql.wrap(fields[i]) + " " + fields[i+1]
-			return sql
+		if i == len(fields)-1 {
+			sql.Group += " " + sql.wrap(fields[i])
+		} else {
+			sql.Group += " " + sql.wrap(fields[i]) + ","
 		}
-		sql.Group += " " + sql.wrap(fields[i]) + " and "
+	}
+	return sql
+}
+
+// GroupByRaw set group by.
+func (sql *SQL) GroupByRaw(group string) *SQL {
+	if group != "" {
+		sql.Group += " " + group
 	}
 	return sql
 }
@@ -215,12 +231,21 @@ func (sql *SQL) Find(arg interface{}) (map[string]interface{}, error) {
 // Count query the count of query results.
 func (sql *SQL) Count() (int64, error) {
 	var (
-		res map[string]interface{}
-		err error
+		res    map[string]interface{}
+		err    error
+		driver = sql.diver.Name()
 	)
+
 	if res, err = sql.Select("count(*)").First(); err != nil {
 		return 0, err
 	}
+
+	if driver == DriverPostgresql {
+		return res["count"].(int64), nil
+	} else if driver == DriverMssql {
+		return res[""].(int64), nil
+	}
+
 	return res["count(*)"].(int64), nil
 }
 
@@ -397,16 +422,7 @@ func (sql *SQL) First() (map[string]interface{}, error) {
 
 	sql.dialect.Select(&sql.SQLComponent)
 
-	var (
-		res []map[string]interface{}
-		err error
-	)
-
-	if sql.tx != nil {
-		res, err = sql.diver.QueryWithTx(sql.tx, sql.Statement, sql.Args...)
-	} else {
-		res, err = sql.diver.QueryWithConnection(sql.conn, sql.Statement, sql.Args...)
-	}
+	res, err := sql.diver.QueryWith(sql.tx, sql.conn, sql.Statement, sql.Args...)
 
 	if err != nil {
 		return nil, err
@@ -424,10 +440,7 @@ func (sql *SQL) All() ([]map[string]interface{}, error) {
 
 	sql.dialect.Select(&sql.SQLComponent)
 
-	if sql.tx != nil {
-		return sql.diver.QueryWithTx(sql.tx, sql.Statement, sql.Args...)
-	}
-	return sql.diver.QueryWithConnection(sql.conn, sql.Statement, sql.Args...)
+	return sql.diver.QueryWith(sql.tx, sql.conn, sql.Statement, sql.Args...)
 }
 
 // ShowColumns show columns info.
@@ -438,10 +451,39 @@ func (sql *SQL) ShowColumns() ([]map[string]interface{}, error) {
 }
 
 // ShowTables show table info.
-func (sql *SQL) ShowTables() ([]map[string]interface{}, error) {
+func (sql *SQL) ShowTables() ([]string, error) {
 	defer RecycleSQL(sql)
 
-	return sql.diver.QueryWithConnection(sql.conn, sql.dialect.ShowTables())
+	models, err := sql.diver.QueryWithConnection(sql.conn, sql.dialect.ShowTables())
+
+	if err != nil {
+		return []string{}, err
+	}
+
+	tables := make([]string, 0)
+	if len(models) == 0 {
+		return tables, nil
+	}
+
+	key := "Tables_in_" + sql.TableName
+	if sql.diver.Name() == DriverPostgresql || sql.diver.Name() == DriverSqlite {
+		key = "tablename"
+	} else if sql.diver.Name() == DriverMssql {
+		key = "TABLE_NAME"
+	} else if _, ok := models[0][key].(string); !ok {
+		key = "Tables_in_" + strings.ToLower(sql.TableName)
+	}
+
+	for i := 0; i < len(models); i++ {
+		// skip sqlite system tables
+		if sql.diver.Name() == DriverSqlite && models[i][key].(string) == "sqlite_sequence" {
+			continue
+		}
+
+		tables = append(tables, models[i][key].(string))
+	}
+
+	return tables, nil
 }
 
 // Update exec the update method of given key/value pairs.
@@ -452,16 +494,7 @@ func (sql *SQL) Update(values dialect.H) (int64, error) {
 
 	sql.dialect.Update(&sql.SQLComponent)
 
-	var (
-		res dbsql.Result
-		err error
-	)
-
-	if sql.tx != nil {
-		res, err = sql.diver.ExecWithTx(sql.tx, sql.Statement, sql.Args...)
-	} else {
-		res, err = sql.diver.ExecWithConnection(sql.conn, sql.Statement, sql.Args...)
-	}
+	res, err := sql.diver.ExecWith(sql.tx, sql.conn, sql.Statement, sql.Args...)
 
 	if err != nil {
 		return 0, err
@@ -480,16 +513,7 @@ func (sql *SQL) Delete() error {
 
 	sql.dialect.Delete(&sql.SQLComponent)
 
-	var (
-		res dbsql.Result
-		err error
-	)
-
-	if sql.tx != nil {
-		res, err = sql.diver.ExecWithTx(sql.tx, sql.Statement, sql.Args...)
-	} else {
-		res, err = sql.diver.ExecWithConnection(sql.conn, sql.Statement, sql.Args...)
-	}
+	res, err := sql.diver.ExecWith(sql.tx, sql.conn, sql.Statement, sql.Args...)
 
 	if err != nil {
 		return err
@@ -508,16 +532,7 @@ func (sql *SQL) Exec() (int64, error) {
 
 	sql.dialect.Update(&sql.SQLComponent)
 
-	var (
-		res dbsql.Result
-		err error
-	)
-
-	if sql.tx != nil {
-		res, err = sql.diver.ExecWithTx(sql.tx, sql.Statement, sql.Args...)
-	} else {
-		res, err = sql.diver.ExecWithConnection(sql.conn, sql.Statement, sql.Args...)
-	}
+	res, err := sql.diver.ExecWith(sql.tx, sql.conn, sql.Statement, sql.Args...)
 
 	if err != nil {
 		return 0, err
@@ -530,6 +545,8 @@ func (sql *SQL) Exec() (int64, error) {
 	return res.LastInsertId()
 }
 
+const postgresInsertCheckTableName = "goadmin_menu|goadmin_permissions|goadmin_roles|goadmin_users"
+
 // Insert exec the insert method of given key/value pairs.
 func (sql *SQL) Insert(values dialect.H) (int64, error) {
 	defer RecycleSQL(sql)
@@ -538,40 +555,40 @@ func (sql *SQL) Insert(values dialect.H) (int64, error) {
 
 	sql.dialect.Insert(&sql.SQLComponent)
 
-	var (
-		res    dbsql.Result
-		err    error
-		resMap []map[string]interface{}
-	)
+	if sql.diver.Name() == DriverPostgresql && (strings.Index(postgresInsertCheckTableName, sql.TableName) != -1) {
 
-	if sql.diver.Name() == DriverPostgresql {
-		if sql.TableName == "goadmin_menu" ||
-			sql.TableName == "goadmin_permissions" ||
-			sql.TableName == "goadmin_roles" ||
-			sql.TableName == "goadmin_users" {
+		resMap, err := sql.diver.QueryWith(sql.tx, sql.conn, sql.Statement+" RETURNING id", sql.Args...)
 
-			if sql.tx != nil {
-				resMap, err = sql.diver.QueryWithTx(sql.tx, sql.Statement+" RETURNING id", sql.Args...)
-			} else {
-				resMap, err = sql.diver.QueryWithConnection(sql.conn, sql.Statement+" RETURNING id", sql.Args...)
-			}
+		if err != nil {
+
+			// Fixed java h2 database postgresql mode
+			_, err := sql.diver.QueryWith(sql.tx, sql.conn, sql.Statement, sql.Args...)
 
 			if err != nil {
 				return 0, err
 			}
 
-			if len(resMap) == 0 {
-				return 0, errors.New("no affect row")
+			res, err := sql.diver.QueryWithConnection(sql.conn, `SELECT max("id") as "id" FROM "`+sql.TableName+`"`)
+
+			if err != nil {
+				return 0, err
 			}
-			return resMap[0]["id"].(int64), nil
+
+			if len(res) != 0 {
+				return res[0]["id"].(int64), nil
+			}
+
+			return 0, err
 		}
+
+		if len(resMap) == 0 {
+			return 0, errors.New("no affect row")
+		}
+
+		return resMap[0]["id"].(int64), nil
 	}
 
-	if sql.tx != nil {
-		res, err = sql.diver.ExecWithTx(sql.tx, sql.Statement, sql.Args...)
-	} else {
-		res, err = sql.diver.ExecWithConnection(sql.conn, sql.Statement, sql.Args...)
-	}
+	res, err := sql.diver.ExecWith(sql.tx, sql.conn, sql.Statement, sql.Args...)
 
 	if err != nil {
 		return 0, err

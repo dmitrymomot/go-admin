@@ -1,10 +1,11 @@
 package language
 
 import (
-	"github.com/GoAdminGroup/go-admin/modules/config"
-	"github.com/stretchr/testify/assert"
 	"html/template"
 	"testing"
+
+	"github.com/GoAdminGroup/go-admin/modules/config"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestAdd(t *testing.T) {
@@ -12,7 +13,7 @@ func TestAdd(t *testing.T) {
 }
 
 func TestGetWithScope(t *testing.T) {
-	config.Set(config.Config{
+	config.Initialize(&config.Config{
 		Language: CN,
 	})
 	cn["foo"] = "bar"
@@ -24,7 +25,7 @@ func TestGetWithScope(t *testing.T) {
 }
 
 func TestGet(t *testing.T) {
-	config.Set(config.Config{
+	config.Initialize(&config.Config{
 		Language: CN,
 	})
 	cn["foo"] = "bar"
@@ -36,7 +37,7 @@ func TestWithScopes(t *testing.T) {
 }
 
 func TestGetFromHtml(t *testing.T) {
-	config.Set(config.Config{
+	config.Initialize(&config.Config{
 		Language: CN,
 	})
 	cn["user.table.foo"] = "bar"

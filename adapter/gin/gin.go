@@ -7,6 +7,10 @@ package gin
 import (
 	"bytes"
 	"errors"
+	"net/http"
+	"net/url"
+	"strings"
+
 	"github.com/GoAdminGroup/go-admin/adapter"
 	"github.com/GoAdminGroup/go-admin/context"
 	"github.com/GoAdminGroup/go-admin/engine"
@@ -16,9 +20,6 @@ import (
 	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/constant"
 	"github.com/GoAdminGroup/go-admin/template/types"
 	"github.com/gin-gonic/gin"
-	"net/http"
-	"net/url"
-	"strings"
 )
 
 // Gin structure value is a Gin GoAdmin adapter.
@@ -32,16 +33,19 @@ func init() {
 	engine.Register(new(Gin))
 }
 
-func (gins *Gin) User(ci interface{}) (models.UserModel, bool) {
-	return gins.GetUser(ci, gins)
+// User implements the method Adapter.User.
+func (gins *Gin) User(ctx interface{}) (models.UserModel, bool) {
+	return gins.GetUser(ctx, gins)
 }
 
-func (gins *Gin) Use(router interface{}, plugs []plugins.Plugin) error {
-	return gins.GetUse(router, plugs, gins)
+// Use implements the method Adapter.Use.
+func (gins *Gin) Use(app interface{}, plugs []plugins.Plugin) error {
+	return gins.GetUse(app, plugs, gins)
 }
 
-func (gins *Gin) Content(ctx interface{}, getPanelFn types.GetPanelFn) {
-	gins.GetContent(ctx, getPanelFn, gins)
+// Content implements the method Adapter.Content.
+func (gins *Gin) Content(ctx interface{}, getPanelFn types.GetPanelFn, fn context.NodeProcessor, btns ...types.Button) {
+	gins.GetContent(ctx, getPanelFn, gins, btns, fn)
 }
 
 type HandlerFunc func(ctx *gin.Context) (types.Panel, error)
@@ -54,31 +58,37 @@ func Content(handler HandlerFunc) gin.HandlerFunc {
 	}
 }
 
+func (gins *Gin) Run() error                 { panic("not implement") }
+func (gins *Gin) DisableLog()                { panic("not implement") }
+func (gins *Gin) Static(prefix, path string) { panic("not implement") }
+
+// SetApp implements the method Adapter.SetApp.
 func (gins *Gin) SetApp(app interface{}) error {
 	var (
 		eng *gin.Engine
 		ok  bool
 	)
 	if eng, ok = app.(*gin.Engine); !ok {
-		return errors.New("wrong parameter")
+		return errors.New("gin adapter SetApp: wrong parameter")
 	}
 	gins.app = eng
 	return nil
 }
 
-func (gins *Gin) AddHandler(method, path string, plug plugins.Plugin) {
+// AddHandler implements the method Adapter.AddHandler.
+func (gins *Gin) AddHandler(method, path string, handlers context.Handlers) {
 	gins.app.Handle(strings.ToUpper(method), path, func(c *gin.Context) {
 		ctx := context.NewContext(c.Request)
 
 		for _, param := range c.Params {
 			if c.Request.URL.RawQuery == "" {
-				c.Request.URL.RawQuery += strings.Replace(param.Key, ":", "", -1) + "=" + param.Value
+				c.Request.URL.RawQuery += strings.ReplaceAll(param.Key, ":", "") + "=" + param.Value
 			} else {
-				c.Request.URL.RawQuery += "&" + strings.Replace(param.Key, ":", "", -1) + "=" + param.Value
+				c.Request.URL.RawQuery += "&" + strings.ReplaceAll(param.Key, ":", "") + "=" + param.Value
 			}
 		}
 
-		ctx.SetHandlers(plug.GetHandler(c.Request.URL.Path, strings.ToLower(c.Request.Method))).Next()
+		ctx.SetHandlers(handlers).Next()
 		for key, head := range ctx.Response.Header {
 			c.Header(key, head[0])
 		}
@@ -92,10 +102,12 @@ func (gins *Gin) AddHandler(method, path string, plug plugins.Plugin) {
 	})
 }
 
+// Name implements the method Adapter.Name.
 func (gins *Gin) Name() string {
 	return "gin"
 }
 
+// SetContext implements the method Adapter.SetContext.
 func (gins *Gin) SetContext(contextInterface interface{}) adapter.WebFrameWork {
 	var (
 		ctx *gin.Context
@@ -103,42 +115,54 @@ func (gins *Gin) SetContext(contextInterface interface{}) adapter.WebFrameWork {
 	)
 
 	if ctx, ok = contextInterface.(*gin.Context); !ok {
-		panic("wrong parameter")
+		panic("gin adapter SetContext: wrong parameter")
 	}
 
 	return &Gin{ctx: ctx}
 }
 
+// Redirect implements the method Adapter.Redirect.
 func (gins *Gin) Redirect() {
-	gins.ctx.Redirect(http.StatusFound, config.Get().Url("/login"))
+	gins.ctx.Redirect(http.StatusFound, config.Url(config.GetLoginUrl()))
 	gins.ctx.Abort()
 }
 
+// SetContentType implements the method Adapter.SetContentType.
 func (gins *Gin) SetContentType() {
-	return
 }
 
+// Write implements the method Adapter.Write.
 func (gins *Gin) Write(body []byte) {
 	gins.ctx.Data(http.StatusOK, gins.HTMLContentType(), body)
 }
 
+// GetCookie implements the method Adapter.GetCookie.
 func (gins *Gin) GetCookie() (string, error) {
 	return gins.ctx.Cookie(gins.CookieKey())
 }
 
+// Lang implements the method Adapter.Lang.
+func (gins *Gin) Lang() string {
+	return gins.ctx.Request.URL.Query().Get("__ga_lang")
+}
+
+// Path implements the method Adapter.Path.
 func (gins *Gin) Path() string {
 	return gins.ctx.Request.URL.Path
 }
 
+// Method implements the method Adapter.Method.
 func (gins *Gin) Method() string {
 	return gins.ctx.Request.Method
 }
 
+// FormParam implements the method Adapter.FormParam.
 func (gins *Gin) FormParam() url.Values {
 	_ = gins.ctx.Request.ParseMultipartForm(32 << 20)
 	return gins.ctx.Request.PostForm
 }
 
-func (gins *Gin) PjaxHeader() string {
-	return gins.ctx.Request.Header.Get(constant.PjaxHeader)
+// IsPjax implements the method Adapter.IsPjax.
+func (gins *Gin) IsPjax() bool {
+	return gins.ctx.Request.Header.Get(constant.PjaxHeader) == "true"
 }

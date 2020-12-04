@@ -1,9 +1,10 @@
 package components
 
 import (
+	"html/template"
+
 	"github.com/GoAdminGroup/go-admin/plugins/admin/modules"
 	"github.com/GoAdminGroup/go-admin/template/types"
-	"html/template"
 )
 
 type ImgAttribute struct {
@@ -12,7 +13,7 @@ type ImgAttribute struct {
 	Height   string
 	Uuid     string
 	HasModal bool
-	Src      template.HTML
+	Src      template.URL
 	types.Attribute
 }
 
@@ -33,10 +34,10 @@ func (compo *ImgAttribute) WithModal() types.ImgAttribute {
 }
 
 func (compo *ImgAttribute) SetSrc(value template.HTML) types.ImgAttribute {
-	compo.Src = value
+	compo.Src = template.URL(value)
 	return compo
 }
 
 func (compo *ImgAttribute) GetContent() template.HTML {
-	return ComposeHtml(compo.TemplateList, *compo, "image")
+	return ComposeHtml(compo.TemplateList, compo.Separation, *compo, "image")
 }

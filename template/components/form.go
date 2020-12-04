@@ -2,28 +2,37 @@ package components
 
 import (
 	"fmt"
-	"github.com/GoAdminGroup/go-admin/modules/config"
-	"github.com/GoAdminGroup/go-admin/modules/language"
-	"github.com/GoAdminGroup/go-admin/template/types"
-	"github.com/GoAdminGroup/go-admin/template/types/form"
 	"html/template"
 	"strings"
+
+	"github.com/GoAdminGroup/go-admin/modules/config"
+	"github.com/GoAdminGroup/go-admin/modules/language"
+	"github.com/GoAdminGroup/go-admin/modules/utils"
+	form2 "github.com/GoAdminGroup/go-admin/plugins/admin/modules/form"
+	"github.com/GoAdminGroup/go-admin/template/types"
+	"github.com/GoAdminGroup/go-admin/template/types/form"
 )
 
 type FormAttribute struct {
 	Name            string
+	Id              string
 	Header          template.HTML
-	Content         []types.FormField
-	ContentList     [][]types.FormField
+	Content         types.FormFields
+	ContentList     []types.FormFields
 	Layout          form.Layout
-	TabContents     [][]types.FormField
+	TabContents     []types.FormFields
 	TabHeaders      []string
 	Footer          template.HTML
 	Url             string
+	FieldsHTML      template.HTML
 	Method          string
 	PrimaryKey      string
-	InfoUrl         string
-	CSRFToken       string
+	Ajax            bool
+	AjaxSuccessJS   template.JS
+	AjaxErrorJS     template.JS
+	HeadWidth       int
+	InputWidth      int
+	HiddenFields    map[string]string
 	Title           template.HTML
 	OperationFooter template.HTML
 	Prefix          string
@@ -41,18 +50,57 @@ func (compo *FormAttribute) SetPrimaryKey(value string) types.FormAttribute {
 	return compo
 }
 
-func (compo *FormAttribute) SetContent(value []types.FormField) types.FormAttribute {
+func (compo *FormAttribute) SetContent(value types.FormFields) types.FormAttribute {
 	compo.Content = value
 	return compo
 }
 
-func (compo *FormAttribute) SetTabContents(value [][]types.FormField) types.FormAttribute {
+func (compo *FormAttribute) SetId(id string) types.FormAttribute {
+	compo.Id = id
+	return compo
+}
+
+func (compo *FormAttribute) SetAjax(successJS, errorJS template.JS) types.FormAttribute {
+	if successJS != template.JS("") && errorJS != template.JS("") {
+		compo.Ajax = true
+		compo.AjaxErrorJS = errorJS
+		compo.AjaxSuccessJS = successJS
+	}
+	return compo
+}
+
+func (compo *FormAttribute) SetTabContents(value []types.FormFields) types.FormAttribute {
 	compo.TabContents = value
 	return compo
 }
 
 func (compo *FormAttribute) SetTabHeaders(value []string) types.FormAttribute {
 	compo.TabHeaders = value
+	return compo
+}
+
+func (compo *FormAttribute) SetHeadWidth(width int) types.FormAttribute {
+	if width > 0 {
+		if width > 12 {
+			width = 12
+		}
+		compo.HeadWidth = width
+	}
+	return compo
+}
+
+func (compo *FormAttribute) SetInputWidth(width int) types.FormAttribute {
+	if width > 0 {
+		if width > 12 {
+			width = 12
+		}
+		compo.InputWidth = width
+	}
+	return compo
+}
+
+func (compo *FormAttribute) SetFieldsHTML(html template.HTML) types.FormAttribute {
+	compo.FieldsHTML = html
 	return compo
 }
 
@@ -76,8 +124,8 @@ func (compo *FormAttribute) SetUrl(value string) types.FormAttribute {
 	return compo
 }
 
-func (compo *FormAttribute) SetInfoUrl(value string) types.FormAttribute {
-	compo.InfoUrl = value
+func (compo *FormAttribute) SetHiddenFields(fields map[string]string) types.FormAttribute {
+	compo.HiddenFields = fields
 	return compo
 }
 
@@ -91,19 +139,17 @@ func (compo *FormAttribute) SetTitle(value template.HTML) types.FormAttribute {
 	return compo
 }
 
-func (compo *FormAttribute) SetToken(value string) types.FormAttribute {
-	compo.CSRFToken = value
-	return compo
-}
-
-func (compo *FormAttribute) GetBoxHeader() template.HTML {
+func (compo *FormAttribute) GetDefaultBoxHeader(hideBack bool) template.HTML {
+	if hideBack {
+		return template.HTML(fmt.Sprintf(`<h3 class="box-title">%s</h3>`, language.GetFromHtml(compo.Title)))
+	}
 	return template.HTML(fmt.Sprintf(`<h3 class="box-title">%s</h3>
             <div class="box-tools">
                 <div class="btn-group pull-right" style="margin-right: 10px">
                     <a href='%s' class="btn btn-sm btn-default form-history-back"><i
                                 class="fa fa-arrow-left"></i> %s</a>
                 </div>
-            </div>`, language.GetFromHtml(compo.Title), compo.InfoUrl, language.Get("Back")))
+            </div>`, language.GetFromHtml(compo.Title), compo.HiddenFields[form2.PreviousKey], language.Get("Back")))
 }
 
 func (compo *FormAttribute) GetDetailBoxHeader(editUrl, deleteUrl string) template.HTML {
@@ -131,10 +177,10 @@ func (compo *FormAttribute) GetDetailBoxHeader(editUrl, deleteUrl string) templa
 
 	return template.HTML(`<h3 class="box-title">`) + language.GetFromHtml(compo.Title) + template.HTML(`</h3>
             <div class="box-tools">
-				` + deleteBtn + editBtn + `
+				`+deleteBtn+editBtn+`
                 <div class="btn-group pull-right" style="margin-right: 10px">
-                    <a href='` + compo.InfoUrl + `' class="btn btn-sm btn-default form-history-back"><i
-                                class="fa fa-arrow-left"></i> ` + language.Get("Back") + `</a>
+                    <a href='`+compo.HiddenFields[form2.PreviousKey]+`' class="btn btn-sm btn-default form-history-back"><i
+                                class="fa fa-arrow-left"></i> `+language.Get("Back")+`</a>
                 </div>
             </div>`)
 }
@@ -149,24 +195,20 @@ func (compo *FormAttribute) SetOperationFooter(value template.HTML) types.FormAt
 }
 
 func (compo *FormAttribute) GetContent() template.HTML {
-	compo.CdnUrl = config.Get().AssetUrl
+	compo.CdnUrl = config.GetAssetUrl()
+	if compo.Id == "" {
+		compo.Id = utils.Uuid(10)
+	}
 
-	if compo.Layout == form.LayoutTwoCol {
-		compo.ContentList = make([][]types.FormField, 2)
+	if col := compo.Layout.Col(); col > 0 {
+		compo.ContentList = make([]types.FormFields, col)
 		index := 0
 		for i := 0; i < len(compo.Content); i++ {
-			if index%2 == 0 {
-				compo.ContentList[0] = append(compo.ContentList[0], compo.Content[i])
-			} else {
-				compo.ContentList[1] = append(compo.ContentList[1], compo.Content[i])
-			}
+			ii := index % col
+			compo.ContentList[ii] = append(compo.ContentList[ii], compo.Content[i])
 			if i < len(compo.Content)-1 {
-				if strings.Contains(compo.Content[i+1].Field, "__operator__") {
-					if index%2 == 0 {
-						compo.ContentList[0] = append(compo.ContentList[0], compo.Content[i+1])
-					} else {
-						compo.ContentList[1] = append(compo.ContentList[1], compo.Content[i+1])
-					}
+				if strings.Contains(compo.Content[i+1].Field, "__goadmin_operator__") {
+					compo.ContentList[ii] = append(compo.ContentList[ii], compo.Content[i+1])
 					i++
 				}
 			}
@@ -174,11 +216,11 @@ func (compo *FormAttribute) GetContent() template.HTML {
 		}
 	}
 
-	return ComposeHtml(compo.TemplateList, *compo, "form",
-		"form/default", "form/file", "form/textarea", "form/custom",
-		"form/selectbox", "form/text", "form/radio", "form/switch",
-		"form/password", "form/select", "form/singleselect", "form/datetime_range",
+	return ComposeHtml(compo.TemplateList, compo.Separation, *compo, "form",
+		"form/default", "form/file", "form/multi_file", "form/textarea", "form/custom", "form/rate", "form/slider",
+		"form/selectbox", "form/text", "form/table", "form/radio", "form/switch", "form/checkbox", "form/checkbox_single",
+		"form/checkbox_stacked", "form/password", "form/code", "form/array", "form/select", "form/singleselect",
 		"form/richtext", "form/iconpicker", "form/datetime", "form/number", "form/number_range",
-		"form/email", "form/url", "form/ip", "form/color", "form/currency", "form_components",
-		"form_layout_default", "form_layout_two_col", "form_layout_tab")
+		"form/email", "form/url", "form/ip", "form/color", "form/currency", "form_components", "form/datetime_range",
+		"form_layout_default", "form_layout_two_col", "form_layout_tab", "form_components_layout", "form_layout_flow")
 }

@@ -7,6 +7,11 @@ package chi
 import (
 	"bytes"
 	"errors"
+	"net/http"
+	"net/url"
+	"regexp"
+	"strings"
+
 	"github.com/GoAdminGroup/go-admin/adapter"
 	"github.com/GoAdminGroup/go-admin/context"
 	"github.com/GoAdminGroup/go-admin/engine"
@@ -16,10 +21,6 @@ import (
 	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/constant"
 	"github.com/GoAdminGroup/go-admin/template/types"
 	"github.com/go-chi/chi"
-	"net/http"
-	"net/url"
-	"regexp"
-	"strings"
 )
 
 // Chi structure value is a Chi GoAdmin adapter.
@@ -33,16 +34,23 @@ func init() {
 	engine.Register(new(Chi))
 }
 
-func (ch *Chi) User(ci interface{}) (models.UserModel, bool) {
-	return ch.GetUser(ci, ch)
+// User implements the method Adapter.User.
+func (ch *Chi) User(ctx interface{}) (models.UserModel, bool) {
+	return ch.GetUser(ctx, ch)
 }
 
-func (ch *Chi) Use(router interface{}, plugs []plugins.Plugin) error {
-	return ch.GetUse(router, plugs, ch)
+// Use implements the method Adapter.Use.
+func (ch *Chi) Use(app interface{}, plugs []plugins.Plugin) error {
+	return ch.GetUse(app, plugs, ch)
 }
 
-func (ch *Chi) Content(ctx interface{}, getPanelFn types.GetPanelFn) {
-	ch.GetContent(ctx, getPanelFn, ch)
+func (ch *Chi) Run() error                 { panic("not implement") }
+func (ch *Chi) DisableLog()                { panic("not implement") }
+func (ch *Chi) Static(prefix, path string) { panic("not implement") }
+
+// Content implements the method Adapter.Content.
+func (ch *Chi) Content(ctx interface{}, getPanelFn types.GetPanelFn, fn context.NodeProcessor, btns ...types.Button) {
+	ch.GetContent(ctx, getPanelFn, ch, btns, fn)
 }
 
 type HandlerFunc func(ctx Context) (types.Panel, error)
@@ -59,19 +67,21 @@ func Content(handler HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// SetApp implements the method Adapter.SetApp.
 func (ch *Chi) SetApp(app interface{}) error {
 	var (
 		eng *chi.Mux
 		ok  bool
 	)
 	if eng, ok = app.(*chi.Mux); !ok {
-		return errors.New("wrong parameter")
+		return errors.New("chi adapter SetApp: wrong parameter")
 	}
 	ch.app = eng
 	return nil
 }
 
-func (ch *Chi) AddHandler(method, path string, plug plugins.Plugin) {
+// AddHandler implements the method Adapter.AddHandler.
+func (ch *Chi) AddHandler(method, path string, handlers context.Handlers) {
 	url := path
 	reg1 := regexp.MustCompile(":(.*?)/")
 	reg2 := regexp.MustCompile(":(.*?)$")
@@ -94,13 +104,13 @@ func (ch *Chi) AddHandler(method, path string, plug plugins.Plugin) {
 
 		for i := 0; i < len(params.Values); i++ {
 			if r.URL.RawQuery == "" {
-				r.URL.RawQuery += strings.Replace(params.Keys[i], ":", "", -1) + "=" + params.Values[i]
+				r.URL.RawQuery += strings.ReplaceAll(params.Keys[i], ":", "") + "=" + params.Values[i]
 			} else {
-				r.URL.RawQuery += "&" + strings.Replace(params.Keys[i], ":", "", -1) + "=" + params.Values[i]
+				r.URL.RawQuery += "&" + strings.ReplaceAll(params.Keys[i], ":", "") + "=" + params.Values[i]
 			}
 		}
 
-		ctx.SetHandlers(plug.GetHandler(r.URL.Path, strings.ToLower(r.Method))).Next()
+		ctx.SetHandlers(handlers).Next()
 		for key, head := range ctx.Response.Header {
 			w.Header().Set(key, head[0])
 		}
@@ -145,34 +155,40 @@ type Context struct {
 	Response http.ResponseWriter
 }
 
+// SetContext implements the method Adapter.SetContext.
 func (ch *Chi) SetContext(contextInterface interface{}) adapter.WebFrameWork {
 	var (
 		ctx Context
 		ok  bool
 	)
 	if ctx, ok = contextInterface.(Context); !ok {
-		panic("wrong parameter")
+		panic("chi adapter SetContext: wrong parameter")
 	}
 	return &Chi{ctx: ctx}
 }
 
+// Name implements the method Adapter.Name.
 func (ch *Chi) Name() string {
 	return "chi"
 }
 
+// Redirect implements the method Adapter.Redirect.
 func (ch *Chi) Redirect() {
-	http.Redirect(ch.ctx.Response, ch.ctx.Request, cfg.Get().Url("/login"), http.StatusFound)
+	http.Redirect(ch.ctx.Response, ch.ctx.Request, cfg.Url(cfg.GetLoginUrl()), http.StatusFound)
 }
 
+// SetContentType implements the method Adapter.SetContentType.
 func (ch *Chi) SetContentType() {
 	ch.ctx.Response.Header().Set("Content-Type", ch.HTMLContentType())
 }
 
+// Write implements the method Adapter.Write.
 func (ch *Chi) Write(body []byte) {
 	ch.ctx.Response.WriteHeader(http.StatusOK)
 	_, _ = ch.ctx.Response.Write(body)
 }
 
+// GetCookie implements the method Adapter.GetCookie.
 func (ch *Chi) GetCookie() (string, error) {
 	cookie, err := ch.ctx.Request.Cookie(ch.CookieKey())
 	if err != nil {
@@ -181,19 +197,28 @@ func (ch *Chi) GetCookie() (string, error) {
 	return cookie.Value, err
 }
 
+// Lang implements the method Adapter.Lang.
+func (ch *Chi) Lang() string {
+	return ch.ctx.Request.URL.Query().Get("__ga_lang")
+}
+
+// Path implements the method Adapter.Path.
 func (ch *Chi) Path() string {
 	return ch.ctx.Request.URL.Path
 }
 
+// Method implements the method Adapter.Method.
 func (ch *Chi) Method() string {
 	return ch.ctx.Request.Method
 }
 
+// FormParam implements the method Adapter.FormParam.
 func (ch *Chi) FormParam() url.Values {
 	_ = ch.ctx.Request.ParseMultipartForm(32 << 20)
 	return ch.ctx.Request.PostForm
 }
 
-func (ch *Chi) PjaxHeader() string {
-	return ch.ctx.Request.Header.Get(constant.PjaxHeader)
+// IsPjax implements the method Adapter.IsPjax.
+func (ch *Chi) IsPjax() bool {
+	return ch.ctx.Request.Header.Get(constant.PjaxHeader) == "true"
 }

@@ -1,9 +1,10 @@
 package example
 
 import (
+	"html/template"
+
 	"github.com/GoAdminGroup/go-admin/context"
 	"github.com/GoAdminGroup/go-admin/modules/auth"
-	"github.com/GoAdminGroup/go-admin/modules/db"
 	"github.com/GoAdminGroup/go-admin/modules/page"
 	template2 "github.com/GoAdminGroup/go-admin/template"
 	"github.com/GoAdminGroup/go-admin/template/chartjs"
@@ -14,10 +15,9 @@ import (
 	"github.com/GoAdminGroup/themes/adminlte/components/productlist"
 	"github.com/GoAdminGroup/themes/adminlte/components/progress_group"
 	"github.com/GoAdminGroup/themes/adminlte/components/smallbox"
-	"html/template"
 )
 
-func TestHandler(ctx *context.Context) {
+func (e *Example) TestHandler(ctx *context.Context) {
 	page.SetPageContent(ctx, auth.Auth(ctx), func(ctx interface{}) (types.Panel, error) {
 
 		components := template2.Default()
@@ -66,37 +66,28 @@ func TestHandler(ctx *context.Context) {
 		 * Box
 		/**************************/
 
-		table := components.Table().SetType("table").SetInfoList([]map[string]template.HTML{
+		table := components.Table().SetInfoList([]map[string]types.InfoItem{
 			{
-				"Order ID":   "OR9842",
-				"Item":       "Call of Duty IV",
-				"Status":     "shipped",
-				"Popularity": "90%",
+				"Order ID":   {Content: "OR9842"},
+				"Item":       {Content: "Call of Duty IV"},
+				"Status":     {Content: "shipped"},
+				"Popularity": {Content: "90%"},
 			}, {
-				"Order ID":   "OR9842",
-				"Item":       "Call of Duty IV",
-				"Status":     "shipped",
-				"Popularity": "90%",
+				"Order ID":   {Content: "OR9842"},
+				"Item":       {Content: "Call of Duty IV"},
+				"Status":     {Content: "shipped"},
+				"Popularity": {Content: "90%"},
 			}, {
-				"Order ID":   "OR9842",
-				"Item":       "Call of Duty IV",
-				"Status":     "shipped",
-				"Popularity": "90%",
+				"Order ID":   {Content: "OR9842"},
+				"Item":       {Content: "Call of Duty IV"},
+				"Status":     {Content: "shipped"},
+				"Popularity": {Content: "90%"},
 			},
-		}).SetThead([]map[string]string{
-			{
-				"head":     "Order ID",
-				"sortable": "0",
-			}, {
-				"head":     "Item",
-				"sortable": "0",
-			}, {
-				"head":     "Status",
-				"sortable": "0",
-			}, {
-				"head":     "Popularity",
-				"sortable": "0",
-			},
+		}).SetThead(types.Thead{
+			{Head: "Order ID"},
+			{Head: "Item"},
+			{Head: "Status"},
+			{Head: "Popularity"},
 		}).GetContent()
 
 		boxInfo := components.Box().
@@ -389,5 +380,5 @@ func TestHandler(ctx *context.Context) {
 			Title:       "Dashboard",
 			Description: "dashboard example",
 		}, nil
-	}, db.GetConnection(services))
+	}, e.Conn)
 }

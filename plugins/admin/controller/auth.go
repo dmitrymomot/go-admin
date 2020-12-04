@@ -2,8 +2,13 @@ package controller
 
 import (
 	"bytes"
+	template2 "html/template"
+	"net/http"
+	"net/url"
+
 	"github.com/GoAdminGroup/go-admin/context"
 	"github.com/GoAdminGroup/go-admin/modules/auth"
+	"github.com/GoAdminGroup/go-admin/modules/config"
 	"github.com/GoAdminGroup/go-admin/modules/db"
 	"github.com/GoAdminGroup/go-admin/modules/logger"
 	"github.com/GoAdminGroup/go-admin/modules/system"
@@ -12,19 +17,28 @@ import (
 	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/response"
 	"github.com/GoAdminGroup/go-admin/template"
 	"github.com/GoAdminGroup/go-admin/template/types"
-	template2 "html/template"
-	"net/http"
 )
 
 // Auth check the input password and username for authentication.
-func Auth(ctx *context.Context) {
-
-	s, exist := services.GetOrNot(auth.ServiceKey)
+func (h *Handler) Auth(ctx *context.Context) {
 
 	var (
-		user models.UserModel
-		ok   bool
+		user     models.UserModel
+		ok       bool
+		errMsg   = "fail"
+		s, exist = h.services.GetOrNot(auth.ServiceKey)
 	)
+
+	if capDriver, ok := h.captchaConfig["driver"]; ok {
+		capt, ok := captcha.Get(capDriver)
+
+		if ok {
+			if !capt.Validate(ctx.FormValue("token")) {
+				response.BadRequest(ctx, "wrong captcha")
+				return
+			}
+		}
+	}
 
 	if !exist {
 		password := ctx.FormValue("password")
@@ -34,40 +48,53 @@ func Auth(ctx *context.Context) {
 			response.BadRequest(ctx, "wrong password or username")
 			return
 		}
-		user, ok = auth.Check(password, username, conn)
+		user, ok = auth.Check(password, username, h.conn)
 	} else {
-		user, ok = auth.GetService(s).P(ctx)
+		user, ok, errMsg = auth.GetService(s).P(ctx)
 	}
 
-	if ok {
-
-		cd, ok := captcha.Get(captchaConfig["driver"])
-
-		if ok {
-			if !cd.Validate(ctx.FormValue("token")) {
-				response.BadRequest(ctx, "wrong captcha")
-			}
-		}
-
-		auth.SetCookie(ctx, user, conn)
-
-		response.OkWithData(ctx, map[string]interface{}{
-			"url": config.GetIndexURL(),
-		})
+	if !ok {
+		response.BadRequest(ctx, errMsg)
 		return
 	}
-	response.BadRequest(ctx, "fail")
+
+	err := auth.SetCookie(ctx, user, h.conn)
+
+	if err != nil {
+		response.Error(ctx, err.Error())
+		return
+	}
+
+	if ref := ctx.Referer(); ref != "" {
+		if u, err := url.Parse(ref); err == nil {
+			v := u.Query()
+			if r := v.Get("ref"); r != "" {
+				rr, _ := url.QueryUnescape(r)
+				response.OkWithData(ctx, map[string]interface{}{
+					"url": rr,
+				})
+				return
+			}
+		}
+	}
+
+	response.OkWithData(ctx, map[string]interface{}{
+		"url": h.config.GetIndexURL(),
+	})
 }
 
 // Logout delete the cookie.
-func Logout(ctx *context.Context) {
-	auth.DelCookie(ctx, db.GetConnection(services))
-	ctx.AddHeader("Location", config.Url("/login"))
+func (h *Handler) Logout(ctx *context.Context) {
+	err := auth.DelCookie(ctx, db.GetConnection(h.services))
+	if err != nil {
+		logger.Error("logout error", err)
+	}
+	ctx.AddHeader("Location", h.config.Url(config.GetLoginUrl()))
 	ctx.SetStatusCode(302)
 }
 
 // ShowLogin show the login page.
-func ShowLogin(ctx *context.Context) {
+func (h *Handler) ShowLogin(ctx *context.Context) {
 
 	tmpl, name := template.GetComp("login").GetTemplate()
 	buf := new(bytes.Buffer)
@@ -78,13 +105,13 @@ func ShowLogin(ctx *context.Context) {
 		CdnUrl    string
 		System    types.SystemInfo
 	}{
-		UrlPrefix: config.AssertPrefix(),
-		Title:     config.LoginTitle,
-		Logo:      config.LoginLogo,
+		UrlPrefix: h.config.AssertPrefix(),
+		Title:     h.config.LoginTitle,
+		Logo:      h.config.LoginLogo,
 		System: types.SystemInfo{
 			Version: system.Version(),
 		},
-		CdnUrl: config.AssetUrl,
+		CdnUrl: h.config.AssetUrl,
 	}); err == nil {
 		ctx.HTML(http.StatusOK, buf.String())
 	} else {

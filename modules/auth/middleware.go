@@ -5,16 +5,20 @@
 package auth
 
 import (
+	"net/http"
+	"net/url"
+
 	"github.com/GoAdminGroup/go-admin/context"
 	"github.com/GoAdminGroup/go-admin/modules/config"
+	"github.com/GoAdminGroup/go-admin/modules/constant"
 	"github.com/GoAdminGroup/go-admin/modules/db"
+	"github.com/GoAdminGroup/go-admin/modules/errors"
 	"github.com/GoAdminGroup/go-admin/modules/language"
+	"github.com/GoAdminGroup/go-admin/modules/logger"
 	"github.com/GoAdminGroup/go-admin/modules/page"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/models"
 	template2 "github.com/GoAdminGroup/go-admin/template"
 	"github.com/GoAdminGroup/go-admin/template/types"
-	"html/template"
-	"net/url"
 )
 
 // Invoker contains the callback functions which are used
@@ -34,24 +38,63 @@ func Middleware(conn db.Connection) context.Handler {
 // DefaultInvoker return a default Invoker.
 func DefaultInvoker(conn db.Connection) *Invoker {
 	return &Invoker{
-		prefix: config.Get().Prefix(),
+		prefix: config.Prefix(),
 		authFailCallback: func(ctx *context.Context) {
-			ctx.Write(302, map[string]string{
-				"Location": config.Get().Url("/login"),
-			}, ``)
+			if ctx.Request.URL.Path == config.Url(config.GetLoginUrl()) {
+				return
+			}
+			if ctx.Request.URL.Path == config.Url("/logout") {
+				ctx.Write(302, map[string]string{
+					"Location": config.Url(config.GetLoginUrl()),
+				}, ``)
+				return
+			}
+			param := ""
+			if ref := ctx.Referer(); ref != "" {
+				param = "?ref=" + url.QueryEscape(ref)
+			}
+
+			u := config.Url(config.GetLoginUrl() + param)
+			_, err := ctx.Request.Cookie(DefaultCookieKey)
+			referer := ctx.Referer()
+
+			if (ctx.Headers(constant.PjaxHeader) == "" && ctx.Method() != "GET") ||
+				err != nil ||
+				referer == "" {
+				ctx.Write(302, map[string]string{
+					"Location": u,
+				}, ``)
+			} else {
+				msg := language.Get("login overdue, please login again")
+				ctx.HTML(http.StatusOK, `<script>
+	if (typeof(swal) === "function") {
+		swal({
+			type: "info",
+			title: "`+language.Get("login info")+`",
+			text: "`+msg+`",
+			showCancelButton: false,
+			confirmButtonColor: "#3c8dbc",
+			confirmButtonText: '`+language.Get("got it")+`',
+        })
+		setTimeout(function(){ location.href = "`+u+`"; }, 3000);
+	} else {
+		alert("`+msg+`")
+		location.href = "`+u+`"
+    }
+</script>`)
+			}
 		},
 		permissionDenyCallback: func(ctx *context.Context) {
-			page.SetPageContent(ctx, Auth(ctx), func(ctx interface{}) (types.Panel, error) {
-				alert := template2.Get(config.Get().Theme).Alert().
-					SetTitle(template.HTML(`<i class="icon fa fa-warning"></i> ` + language.Get("error") + `!`)).
-					SetTheme("warning").SetContent(template.HTML("permission denied")).GetContent()
-
-				return types.Panel{
-					Content:     alert,
-					Description: "Error",
-					Title:       "Error",
-				}, nil
-			}, conn)
+			if ctx.Headers(constant.PjaxHeader) == "" && ctx.Method() != "GET" {
+				ctx.JSON(http.StatusForbidden, map[string]interface{}{
+					"code": http.StatusForbidden,
+					"msg":  language.Get(errors.PermissionDenied),
+				})
+			} else {
+				page.SetPageContent(ctx, Auth(ctx), func(ctx interface{}) (types.Panel, error) {
+					return template2.WarningPanel(errors.PermissionDenied, template2.NoPermission403Page), nil
+				}, conn)
+			}
 		},
 		conn: conn,
 	}
@@ -109,12 +152,19 @@ func (invoker *Invoker) Middleware() context.Handler {
 // at the same time.
 func Filter(ctx *context.Context, conn db.Connection) (models.UserModel, bool, bool) {
 	var (
-		id   float64
-		ok   bool
-		user = models.User()
+		id float64
+		ok bool
+
+		user     = models.User()
+		ses, err = InitSession(ctx, conn)
 	)
 
-	if id, ok = InitSession(ctx, conn).Get("user_id").(float64); !ok {
+	if err != nil {
+		logger.Error("retrieve auth user failed", err)
+		return user, false, false
+	}
+
+	if id, ok = ses.Get("user_id").(float64); !ok {
 		return user, false, false
 	}
 
@@ -131,7 +181,11 @@ const defaultUserIDSesKey = "user_id"
 
 // GetUserID return the user id from the session.
 func GetUserID(sesKey string, conn db.Connection) int64 {
-	id := GetSessionByKey(sesKey, defaultUserIDSesKey, conn)
+	id, err := GetSessionByKey(sesKey, defaultUserIDSesKey, conn)
+	if err != nil {
+		logger.Error("retrieve auth user failed", err)
+		return -1
+	}
 	if idFloat64, ok := id.(float64); ok {
 		return int64(idFloat64)
 	}
@@ -164,10 +218,10 @@ func GetCurUserByID(id int64, conn db.Connection) (user models.UserModel, ok boo
 		return
 	}
 
-	if user.Avatar == "" || config.Get().Store.Prefix == "" {
+	if user.Avatar == "" || config.GetStore().Prefix == "" {
 		user.Avatar = ""
 	} else {
-		user.Avatar = "/" + config.Get().Store.Prefix + "/" + user.Avatar
+		user.Avatar = config.GetStore().URL(user.Avatar)
 	}
 
 	user = user.WithRoles().WithPermissions().WithMenus()

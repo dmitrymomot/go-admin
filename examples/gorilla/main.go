@@ -1,24 +1,23 @@
 package main
 
 import (
-	_ "github.com/GoAdminGroup/go-admin/modules/db/drivers/mysql"
-	"github.com/GoAdminGroup/go-admin/template"
-	"github.com/GoAdminGroup/go-admin/template/chartjs"
-	_ "github.com/GoAdminGroup/themes/adminlte"
+	"log"
+	"net/http"
 	"os"
 	"os/signal"
 
-	ada "github.com/GoAdminGroup/go-admin/adapter/gorilla"
+	_ "github.com/GoAdminGroup/go-admin/adapter/gorilla"
+	_ "github.com/GoAdminGroup/go-admin/modules/db/drivers/mysql"
+	_ "github.com/GoAdminGroup/themes/adminlte"
+
 	"github.com/GoAdminGroup/go-admin/engine"
 	"github.com/GoAdminGroup/go-admin/examples/datamodel"
 	"github.com/GoAdminGroup/go-admin/modules/config"
 	"github.com/GoAdminGroup/go-admin/modules/language"
-	"github.com/GoAdminGroup/go-admin/plugins/admin"
 	"github.com/GoAdminGroup/go-admin/plugins/example"
-	"github.com/GoAdminGroup/go-admin/template/types"
+	"github.com/GoAdminGroup/go-admin/template"
+	"github.com/GoAdminGroup/go-admin/template/chartjs"
 	"github.com/gorilla/mux"
-	"log"
-	"net/http"
 )
 
 func main() {
@@ -26,6 +25,7 @@ func main() {
 	eng := engine.Default()
 
 	cfg := config.Config{
+		Env: config.EnvLocal,
 		Databases: config.DatabaseList{
 			"default": {
 				Host:       "127.0.0.1",
@@ -59,7 +59,7 @@ func main() {
 	// examplePlugin := plugins.LoadFromPlugin("../datamodel/example.so")
 
 	// customize the login page
-	// example: https://github.com/GoAdminGroup/go-admin/blob/master/demo/main.go#L30
+	// example: https://github.com/GoAdminGroup/demo.go-admin.cn/blob/master/main.go#L39
 	//
 	// template.AddComp("login", datamodel.LoginPage)
 
@@ -67,28 +67,29 @@ func main() {
 	//
 	// eng.AddConfigFromJSON("../datamodel/config.json")
 
-	if err := eng.AddConfig(cfg).AddPlugins(admin.
-		NewAdmin(datamodel.Generators).
+	if err := eng.AddConfig(cfg).
+		AddGenerators(datamodel.Generators).
+		AddDisplayFilterXssJsFilter().
+		// add generator, first parameter is the url prefix of table when visit.
+		// example:
+		//
+		// "user" => http://localhost:9033/admin/info/user
+		//
 		AddGenerator("user", datamodel.GetUserTable).
-		AddDisplayFilterXssJsFilter(), examplePlugin).
+		AddPlugins(examplePlugin).
 		Use(app); err != nil {
 		panic(err)
 	}
 
 	app.PathPrefix("/uploads/").Handler(http.StripPrefix("/uploads/", http.FileServer(http.Dir("./uploads"))))
 
-	app.Handle("/admin", http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		eng.Content(ada.Context{Request: request, Response: writer}, func(ctx interface{}) (types.Panel, error) {
-			return datamodel.GetContent()
-		})
-	})).Methods("get")
+	eng.HTML("GET", "/admin", datamodel.GetContent)
 
-	log.Println("Listening 9033")
 	go func() {
 		_ = http.ListenAndServe(":9033", app)
 	}()
 
-	quit := make(chan os.Signal)
+	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt)
 	<-quit
 	log.Print("closing database connection")

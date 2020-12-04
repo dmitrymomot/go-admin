@@ -2,37 +2,37 @@ package controller
 
 import (
 	"fmt"
+
 	"github.com/GoAdminGroup/go-admin/context"
 	"github.com/GoAdminGroup/go-admin/modules/auth"
 	"github.com/GoAdminGroup/go-admin/modules/language"
-	"github.com/GoAdminGroup/go-admin/modules/menu"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/modules"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/constant"
+	form2 "github.com/GoAdminGroup/go-admin/plugins/admin/modules/form"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/parameter"
-	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/table"
 	"github.com/GoAdminGroup/go-admin/template"
 	"github.com/GoAdminGroup/go-admin/template/types"
 	"github.com/GoAdminGroup/go-admin/template/types/form"
-	template2 "html/template"
-	"net/http"
 )
 
-func ShowDetail(ctx *context.Context) {
-	prefix := ctx.Query(constant.PrefixKey)
-	id := ctx.Query(constant.DetailPKKey)
-	panel := table.Get(prefix, ctx)
-	user := auth.Auth(ctx)
+func (h *Handler) ShowDetail(ctx *context.Context) {
 
-	newPanel := panel.Copy()
+	var (
+		prefix    = ctx.Query(constant.PrefixKey)
+		id        = ctx.Query(constant.DetailPKKey)
+		panel     = h.table(prefix, ctx)
+		user      = auth.Auth(ctx)
+		newPanel  = panel.Copy()
+		detail    = panel.GetDetail()
+		info      = panel.GetInfo()
+		formModel = newPanel.GetForm()
+		fieldList = make(types.FieldList, 0)
+	)
 
-	formModel := newPanel.GetForm()
-
-	var fieldList types.FieldList
-
-	if len(panel.GetDetail().FieldList) == 0 {
-		fieldList = panel.GetInfo().FieldList
+	if len(detail.FieldList) == 0 {
+		fieldList = info.FieldList
 	} else {
-		fieldList = panel.GetDetail().FieldList
+		fieldList = detail.FieldList
 	}
 
 	formModel.FieldList = make([]types.FormField, len(fieldList))
@@ -40,36 +40,36 @@ func ShowDetail(ctx *context.Context) {
 	for i, field := range fieldList {
 		formModel.FieldList[i] = types.FormField{
 			Field:        field.Field,
+			FieldClass:   field.Field,
 			TypeName:     field.TypeName,
 			Head:         field.Head,
+			Hide:         field.Hide,
+			Joins:        field.Joins,
 			FormType:     form.Default,
 			FieldDisplay: field.FieldDisplay,
 		}
 	}
 
-	formData, _, _, _, _, err := newPanel.GetDataWithId(id)
-
-	var alert template2.HTML
-
-	if err != nil && alert == "" {
-		alert = aAlert().SetTitle(constant.DefaultErrorMsg).
-			SetTheme("warning").
-			SetContent(template2.HTML(err.Error())).
-			GetContent()
+	if detail.Table != "" {
+		formModel.Table = detail.Table
+	} else {
+		formModel.Table = info.Table
 	}
 
-	paramStr := parameter.GetParam(ctx.Request.URL.Query(),
-		panel.GetInfo().DefaultPageSize,
-		panel.GetInfo().SortField,
-		panel.GetInfo().GetSort()).GetRouteParamStr()
+	param := parameter.GetParam(ctx.Request.URL,
+		info.DefaultPageSize,
+		info.SortField,
+		info.GetSort())
 
-	editUrl := modules.AorEmpty(panel.GetEditable(), routePathWithPrefix("show_edit", prefix)+paramStr+
+	paramStr := param.DeleteDetailPk().GetRouteParamStr()
+
+	editUrl := modules.AorEmpty(!info.IsHideEditButton, h.routePathWithPrefix("show_edit", prefix)+paramStr+
 		"&"+constant.EditPKKey+"="+ctx.Query(constant.DetailPKKey))
-	deleteUrl := modules.AorEmpty(panel.GetDeletable(), routePathWithPrefix("delete", prefix)+paramStr)
-	infoUrl := routePathWithPrefix("info", prefix) + paramStr
+	deleteUrl := modules.AorEmpty(!info.IsHideDeleteButton, h.routePathWithPrefix("delete", prefix)+paramStr)
+	infoUrl := h.routePathWithPrefix("info", prefix) + paramStr
 
-	editUrl = user.GetCheckPermissionByUrlMethod(editUrl, route("show_edit").Method())
-	deleteUrl = user.GetCheckPermissionByUrlMethod(deleteUrl, route("delete").Method())
+	editUrl = user.GetCheckPermissionByUrlMethod(editUrl, h.route("show_edit").Method())
+	deleteUrl = user.GetCheckPermissionByUrlMethod(deleteUrl, h.route("delete").Method())
 
 	deleteJs := ""
 
@@ -110,32 +110,48 @@ $('.delete-btn').on('click', function (event) {
 	DeletePost(%s)
 });
 
-</script>`, language.Get("are you sure to delete"), language.Get("yes"), language.Get("cancel"), deleteUrl, infoUrl, id)
+</script>`, language.Get("are you sure to delete"), language.Get("yes"),
+			language.Get("cancel"), deleteUrl, infoUrl, id)
 	}
 
-	title := panel.GetDetail().Title
+	title := ""
+	desc := ""
 
-	if title == "" {
-		title = panel.GetInfo().Title + language.Get("Detail")
+	isNotIframe := ctx.Query(constant.IframeKey) != "true"
+
+	if isNotIframe {
+		title = detail.Title
+
+		if title == "" {
+			title = info.Title + language.Get("Detail")
+		}
+
+		desc = detail.Description
+
+		if desc == "" {
+			desc = info.Description + language.Get("Detail")
+		}
 	}
 
-	desc := panel.GetDetail().Description
+	formInfo, err := newPanel.GetDataWithId(param.WithPKs(id))
 
-	if desc == "" {
-		desc = panel.GetInfo().Description + language.Get("Detail")
+	if err != nil {
+		h.HTML(ctx, user, template.WarningPanelWithDescAndTitle(err.Error(), desc, title),
+			template.ExecuteOptions{Animation: param.Animation})
+		return
 	}
 
-	tmpl, tmplName := aTemplate().GetTemplate(isPjax(ctx))
-	buf := template.Execute(tmpl, tmplName, user, types.Panel{
-		Content: alert + detailContent(aForm().
+	h.HTML(ctx, user, types.Panel{
+		Content: detailContent(aForm().
 			SetTitle(template.HTML(title)).
-			SetContent(formData).
-			SetFooter(template.HTML(deleteJs)).
-			SetInfoUrl(infoUrl).
-			SetPrefix(config.PrefixFixSlash()), editUrl, deleteUrl),
-		Description: desc,
-		Title:       title,
-	}, config, menu.GetGlobalMenu(user, conn).SetActiveClass(config.URLRemovePrefix(ctx.Path())))
-
-	ctx.HTML(http.StatusOK, buf.String())
+			SetContent(formInfo.FieldList).
+			SetHeader(detail.HeaderHtml).
+			SetFooter(template.HTML(deleteJs)+detail.FooterHtml).
+			SetHiddenFields(map[string]string{
+				form2.PreviousKey: infoUrl,
+			}).
+			SetPrefix(h.config.PrefixFixSlash()), editUrl, deleteUrl, !isNotIframe),
+		Description: template.HTML(desc),
+		Title:       template.HTML(title),
+	}, template.ExecuteOptions{Animation: param.Animation})
 }

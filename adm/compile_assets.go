@@ -1,11 +1,13 @@
 package main
 
 import (
-	"github.com/jteeuwen/go-bindata"
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+
+	"github.com/jteeuwen/go-bindata"
 )
 
 func compileAsset(rootPath, outputPath, packageName string) {
@@ -22,6 +24,11 @@ func compileAsset(rootPath, outputPath, packageName string) {
 
 var AssetsList = []string{
 `
+		pathsContent := `package ` + packageName + `
+
+var AssetPaths = map[string]string{
+`
+
 		fileNames, err := getAllFiles(rootPath)
 
 		if err != nil {
@@ -29,14 +36,29 @@ var AssetsList = []string{
 		}
 
 		for _, name := range fileNames {
-			listContent += `	"` + rootPathArr[1] + strings.Replace(name, rootPath, "", -1)[1:] + `",
+			listContent += `	"` + rootPathArr[1] + strings.ReplaceAll(name, rootPath, "")[1:] + `",
 `
+			ext := filepath.Ext(name)
+			if ext == ".css" || ext == ".js" {
+				fileName := filepath.Base(name)
+				reg, _ := regexp.Compile(".min.(.*?)" + ext)
+				pathsContent += `	"` + reg.ReplaceAllString(fileName, ".min"+ext) + `":"` +
+					rootPathArr[1] + strings.ReplaceAll(name, rootPath, "")[1:] + `",
+`
+			}
 		}
+
+		pathsContent += `
+}`
 
 		listContent += `
 }`
 
 		err = ioutil.WriteFile(outputPath+"/assets_list.go", []byte(listContent), 0644)
+		if err != nil {
+			return
+		}
+		err = ioutil.WriteFile(outputPath+"/assets_path.go", []byte(pathsContent), 0644)
 		if err != nil {
 			return
 		}
